@@ -1,0 +1,42 @@
+server:
+  transport: streamable-http
+  host: 127.0.0.1
+  port: 7421
+  # Add MagicDNS names or alternate private hostnames when binding to a Tailscale IP.
+  allowed_hosts: []
+  max_sessions: 100
+  session_idle_ttl_ms: 1800000
+  # Required for this example. Export SKILL_CATALOG_TOKEN before startup.
+  # Omit bearer_token_env only for intentional narrow local development without auth.
+  bearer_token_env: SKILL_CATALOG_TOKEN
+  session_mode: stateful
+
+roots:
+  - name: ai-dev-skills
+    path: ${AI_DEV_ROOT}/_infra/skills/skills
+    default_trust_status: trusted
+  - name: ai-dev-agent-skills
+    path: ${AI_DEV_ROOT}/.agents/skills
+    default_trust_status: trusted
+
+storage:
+  sqlite_path: ~/.cache/skill-catalog/catalog.sqlite
+
+search:
+  default_limit: 5
+  max_limit: 20
+  qmd:
+    enabled: false
+    collection: skill-catalog
+    command: qmd
+
+limits:
+  max_skill_bytes: 262144
+  max_inline_reference_bytes: 131072
+  max_http_body_bytes: 1048576
+  follow_symlinks: false
+  rate_limit:
+    enabled: true
+    window_ms: 60000
+    max_requests: 120
+    max_entries: 1000

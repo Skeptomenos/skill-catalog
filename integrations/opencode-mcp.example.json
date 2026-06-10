@@ -1,0 +1,11 @@
+{
+  "mcp": {
+    "skill-catalog": {
+      "type": "remote",
+      "url": "http://127.0.0.1:7421/mcp",
+      "headers": {
+        "Authorization": "Bearer ${SKILL_CATALOG_TOKEN}"
+      }
+    }
+  }
+}

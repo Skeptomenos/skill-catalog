@@ -1,0 +1,43 @@
+{
+  "name": "skill-catalog",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.1.2",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts --config config/skill-catalog.example.yaml",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke": "bash scripts/smoke.sh",
+    "check:docs": "bash scripts/check-docs.sh",
+    "validate": "pnpm build && pnpm typecheck && pnpm test && pnpm smoke && pnpm check:docs && git diff --check"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "better-sqlite3": "12.10.0",
+    "effect": "3.21.3",
+    "express": "5.2.1",
+    "gray-matter": "4.0.3",
+    "mime-types": "3.0.2",
+    "yaml": "2.9.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^5.0.6",
+    "@types/mime-types": "^2.1.4",
+    "@types/node": "^25.9.2",
+    "tsx": "4.22.4",
+    "typescript": "6.0.3",
+    "vitest": "4.1.8"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  }
+}

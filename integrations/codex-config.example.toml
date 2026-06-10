@@ -1,0 +1,6 @@
+# Add to Codex config.toml and set SKILL_CATALOG_TOKEN in the environment
+# if bearer-token auth is enabled on the server.
+
+[mcp_servers.skill-catalog]
+url = "http://127.0.0.1:7421/mcp"
+headers = { Authorization = "Bearer ${SKILL_CATALOG_TOKEN}" }
