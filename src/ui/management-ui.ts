@@ -270,6 +270,40 @@ function managementHtml(): string {
       background: #fbfcfe;
       min-height: 74px;
     }
+    .metric-button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      color: inherit;
+      cursor: pointer;
+    }
+    .metric-button:hover {
+      border-color: var(--blue);
+      background: #f4f7ff;
+    }
+    .view-hidden { display: none; }
+    .warning-page {
+      grid-template-columns: 1fr;
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(160px, 1fr));
+      gap: 10px;
+    }
+    .summary-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfe;
+      min-height: 74px;
+    }
+    .summary-card span { color: var(--muted); }
+    .summary-card strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 22px;
+      color: var(--ink);
+    }
     .metric span, label, .muted { color: var(--muted); }
     .metric strong {
       display: block;
@@ -392,14 +426,14 @@ function managementHtml(): string {
       <button id="refresh">Refresh</button>
     </div>
   </header>
-  <main>
+  <main id="dashboardView">
     <div class="stack">
       <section>
         <h2>Status</h2>
         <div class="metrics">
           <div class="metric"><span>Skills</span><strong id="metricSkills">0</strong></div>
           <div class="metric"><span>Roots</span><strong id="metricRoots">0</strong></div>
-          <div class="metric"><span>Warnings</span><strong id="metricWarnings">0</strong></div>
+          <button class="metric metric-button" id="showWarnings" type="button"><span>Warnings</span><strong id="metricWarnings">0</strong></button>
           <div class="metric"><span>QMD</span><strong id="metricQmd">-</strong></div>
         </div>
       </section>
@@ -466,21 +500,67 @@ function managementHtml(): string {
       <div id="statusLine" class="status-line"></div>
     </div>
   </main>
+  <main id="warningView" class="warning-page view-hidden">
+    <section>
+      <div class="toolbar" style="justify-content: space-between;">
+        <h2>Warning Details</h2>
+        <button class="secondary" id="showDashboard" type="button">Back</button>
+      </div>
+      <div class="summary-grid">
+        <div class="summary-card"><span>Skills With Warnings</span><strong id="warningSkillCount">0</strong></div>
+        <div class="summary-card"><span>Indexed Skills</span><strong id="warningTotalSkills">0</strong></div>
+        <div class="summary-card"><span>Skills Without Warnings</span><strong id="warningCleanSkills">0</strong></div>
+      </div>
+    </section>
+    <section>
+      <h2>Warning Code Counts</h2>
+      <table>
+        <thead><tr><th>Code</th><th>Affected Skills</th></tr></thead>
+        <tbody id="warningCodeSummary"></tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Missing Field Counts</h2>
+      <table>
+        <thead><tr><th>Field</th><th>Affected Skills</th></tr></thead>
+        <tbody id="warningFieldSummary"></tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Affected Skills</h2>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Skill</th><th>Source Root</th><th>Trust</th><th>Missing Fields</th><th>Warning Codes</th><th>Messages</th></tr></thead>
+          <tbody id="warningDetails"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
   <script>
     const tokenInput = document.getElementById("token");
     const tokenStore = sessionStorage;
     const savedToken = tokenStore.getItem("skillCatalogAdminToken") || "";
     tokenInput.value = savedToken;
+    let currentStatus = null;
 
     document.getElementById("saveToken").addEventListener("click", () => {
       tokenStore.setItem("skillCatalogAdminToken", tokenInput.value.trim());
       refreshAll();
     });
     document.getElementById("refresh").addEventListener("click", refreshAll);
+    document.getElementById("showWarnings").addEventListener("click", () => {
+      window.location.hash = "warnings";
+      applyRoute();
+    });
+    document.getElementById("showDashboard").addEventListener("click", () => {
+      history.replaceState(null, "", window.location.pathname);
+      applyRoute();
+    });
     document.getElementById("rebuild").addEventListener("click", rebuild);
     document.getElementById("runSearch").addEventListener("click", runSearch);
     document.getElementById("readSkill").addEventListener("click", readSkill);
     document.getElementById("readReference").addEventListener("click", readReference);
+    window.addEventListener("hashchange", applyRoute);
 
     function headers(method = "GET") {
       const token = tokenStore.getItem("skillCatalogAdminToken") || "";
@@ -566,6 +646,7 @@ function managementHtml(): string {
     }
 
     function renderStatus(status) {
+      currentStatus = status;
       const skills = (status.roots || []).reduce((sum, root) => sum + root.skills_indexed, 0);
       document.getElementById("metricSkills").textContent = String(skills);
       document.getElementById("metricRoots").textContent = String((status.roots || []).length);
@@ -593,6 +674,7 @@ function managementHtml(): string {
         warning.code,
         warning.message
       ]);
+      renderWarningDetails(status);
     }
 
     function renderAudit(entries) {
@@ -604,13 +686,66 @@ function managementHtml(): string {
       ]);
     }
 
+    function renderWarningDetails(status) {
+      const warnings = status.metadata_warnings || [];
+      const indexedSkills = (status.roots || []).reduce((sum, root) => sum + root.skills_indexed, 0);
+      document.getElementById("warningSkillCount").textContent = String(warnings.length);
+      document.getElementById("warningTotalSkills").textContent = String(indexedSkills);
+      document.getElementById("warningCleanSkills").textContent = String(Math.max(indexedSkills - warnings.length, 0));
+      renderRows("warningCodeSummary", countWarningCodes(warnings), item => [item.name, item.count]);
+      renderRows("warningFieldSummary", countMissingFields(warnings), item => [item.name, item.count]);
+      renderRows("warningDetails", warnings, warning => [
+        warning.skill,
+        warning.source_root,
+        pill(warning.trust_status),
+        (warning.missing_fields || []).join(", ") || "-",
+        (warning.warnings || []).map(item => item.code).join(", ") || "-",
+        (warning.warnings || []).map(item => item.message).join(" | ") || "-"
+      ]);
+    }
+
+    function countWarningCodes(warnings) {
+      const counts = new Map();
+      for (const warning of warnings) {
+        for (const item of warning.warnings || []) {
+          counts.set(item.code, (counts.get(item.code) || 0) + 1);
+        }
+      }
+      return sortedCounts(counts);
+    }
+
+    function countMissingFields(warnings) {
+      const counts = new Map();
+      for (const warning of warnings) {
+        for (const field of warning.missing_fields || []) {
+          counts.set(field, (counts.get(field) || 0) + 1);
+        }
+      }
+      return sortedCounts(counts);
+    }
+
+    function sortedCounts(counts) {
+      return [...counts.entries()]
+        .map(([name, count]) => ({ name, count }))
+        .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
+    }
+
+    function applyRoute() {
+      const showWarnings = window.location.hash === "#warnings";
+      document.getElementById("dashboardView").classList.toggle("view-hidden", showWarnings);
+      document.getElementById("warningView").classList.toggle("view-hidden", !showWarnings);
+      if (showWarnings && currentStatus) {
+        renderWarningDetails(currentStatus);
+      }
+    }
+
     function renderRows(id, rows, toCells) {
       const body = document.getElementById(id);
       body.innerHTML = "";
       if (!rows.length) {
         const tr = document.createElement("tr");
         const td = document.createElement("td");
-        td.colSpan = 5;
+        td.colSpan = body.closest("table")?.querySelectorAll("thead th").length || 5;
         td.className = "muted";
         td.textContent = "No rows";
         tr.appendChild(td);
@@ -650,6 +785,7 @@ function managementHtml(): string {
     }
 
     refreshAll();
+    applyRoute();
   </script>
 </body>
 </html>`;

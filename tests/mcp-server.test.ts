@@ -71,6 +71,24 @@ describe("MCP HTTP server", () => {
     expect(await response.text()).toContain("Skill Catalog Admin");
   });
 
+  it("renders warning detail controls in the management UI", async () => {
+    const app = createHttpApp(testRuntime({ maxRequests: 10 }));
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    const { port } = server.address() as AddressInfo;
+
+    const response = await fetch(`http://127.0.0.1:${port}/admin`);
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain('id="showWarnings"');
+    expect(html).toContain("Warning Details");
+    expect(html).toContain('id="warningCodeSummary"');
+    expect(html).toContain('id="warningFieldSummary"');
+    expect(html).toContain('id="warningDetails"');
+  });
+
   it("accepts configured MagicDNS host headers and rejects unrelated hosts", async () => {
     const app = createHttpApp(
       testRuntime({
