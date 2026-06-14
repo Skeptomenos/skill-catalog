@@ -34,7 +34,52 @@ describe("ai-dev skill root integration", () => {
       store.close();
     }
   });
+
+  it.runIf(existsSync(aiDevSkillsRoot))("routes dogfood prompts to expected core skills", async () => {
+    const config = integrationConfig(aiDevSkillsRoot);
+    const store = new CatalogStore(config);
+    try {
+      const sync = await Effect.runPromise(scanSkillRoots(config));
+      await Effect.runPromise(store.rebuild(sync));
+      const search = new SearchService(config, store);
+
+      await expectSearchContains(search, "risky multi-step change planning validation handoff", [
+        "writing-plans",
+        "self-correction-loop"
+      ]);
+      await expectSearchContains(search, "update instructions file AGENTS.md project configuration", [
+        "create-agents-md"
+      ]);
+      await expectSearchContains(search, "browser automation local web app safest command pattern", [
+        "agent-browser"
+      ]);
+      await expectSearchContains(search, "messy git branch open PR repo workflow cleanup", [
+        "git-workflow",
+        "ai-dev-repo-git-cleanup"
+      ]);
+      await expectSearchContains(search, "where should I put a new project naming convention", [
+        "repo-navigation",
+        "repo-conventions"
+      ]);
+    } finally {
+      store.close();
+    }
+  });
 });
+
+async function expectSearchContains(
+  search: SearchService,
+  query: string,
+  expectedNames: readonly string[]
+): Promise<void> {
+  const result = await Effect.runPromise(search.search({ query, limit: 10 }));
+  const names = result.results.map((item) => item.name);
+  for (const expectedName of expectedNames) {
+    expect(names, `Expected ${expectedName} in top 10 for query "${query}", got: ${names.join(", ")}`).toContain(
+      expectedName
+    );
+  }
+}
 
 function integrationConfig(root: string): AppConfig {
   return {

@@ -458,12 +458,8 @@ function parseNullableJson<T>(value: string | null): T | null {
 }
 
 function toFtsQuery(query: string): string {
-  const tokens = query
-    .toLowerCase()
-    .match(/[a-z0-9][a-z0-9_-]*/gi)
-    ?.map((token) => token.replace(/"/g, ""))
-    .filter(Boolean);
-  return tokens && tokens.length > 0 ? tokens.map((token) => `${token}*`).join(" OR ") : "";
+  const tokens = tokenizeQuery(query);
+  return tokens.length > 0 ? tokens.map((token) => `${token}*`).join(" OR ") : "";
 }
 
 function toSearchResult(row: SearchRow, query: string, index: number): SearchResultItem {
@@ -494,7 +490,7 @@ function toSearchResult(row: SearchRow, query: string, index: number): SearchRes
 }
 
 function matchedFieldsFor(skill: SkillRecord, query: string): readonly string[] {
-  const tokens = query.toLowerCase().match(/[a-z0-9][a-z0-9_-]*/gi) ?? [];
+  const tokens = tokenizeQuery(query);
   const fields: Array<[string, string]> = [
     ["name", skill.name],
     ["description", skill.description],
@@ -506,4 +502,8 @@ function matchedFieldsFor(skill: SkillRecord, query: string): readonly string[] 
   return fields
     .filter(([, value]) => tokens.some((token) => value.toLowerCase().includes(token.toLowerCase())))
     .map(([field]) => field);
+}
+
+function tokenizeQuery(query: string): readonly string[] {
+  return [...new Set(query.toLowerCase().match(/[a-z0-9]+/gi) ?? [])];
 }

@@ -87,6 +87,23 @@ ${Array.from({ length: 80 }, () => "calibrationtarget").join(" ")}
     expect(result[1]?.matched_fields).toContain("body");
   });
 
+  it("searches hyphenated user queries as safe split tokens", async () => {
+    const root = await createSkillRoot({
+      "planning-loop": "Multi step implementation planning and validation handoff workflow.",
+      "self-correction-loop": "Self correction validation gate and implementation loop."
+    });
+    const config = testConfig(root);
+    const store = new CatalogStore(config);
+    stores.push(store);
+    const sync = await Effect.runPromise(scanSkillRoots(config));
+    await Effect.runPromise(store.rebuild(sync));
+
+    const search = new SearchService(config, store);
+
+    await expectTopSearchResult(search, "risky multi-step implementation handoff", "planning-loop");
+    await expectTopSearchResult(search, "self-correction validation loop", "self-correction-loop");
+  });
+
   it("excludes duplicate skill names and reports sync errors", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "skill-catalog-dupes-"));
     await writeSkill(root, "one", "same", "First skill.");
@@ -392,7 +409,7 @@ description: Incomplete metadata with a stronger name hit.
     expect(status.roots.find((rootStatus) => rootStatus.name === "blocked-root")?.skills_indexed).toBe(1);
 
     const search = new SearchService(config, store);
-    const result = await Effect.runPromise(search.search({ query: "vector-only-no-fts-hit", limit: 5 }));
+    const result = await Effect.runPromise(search.search({ query: "zzqmdonlymarker", limit: 5 }));
 
     expect(result.results).toEqual([]);
   });
@@ -411,7 +428,7 @@ description: Incomplete metadata with a stronger name hit.
     await Effect.runPromise(store.rebuild(sync));
 
     const search = new SearchService(config, store);
-    const result = await Effect.runPromise(search.search({ query: "vector-only-no-fts-hit", limit: 5 }));
+    const result = await Effect.runPromise(search.search({ query: "zzqmdonlymarker", limit: 5 }));
 
     expect(result.results).toHaveLength(1);
     expect(result.results[0]).toMatchObject({
@@ -434,7 +451,7 @@ description: Incomplete metadata with a stronger name hit.
     await Effect.runPromise(store.rebuild(sync));
 
     const search = new SearchService(config, store);
-    const result = await Effect.runPromise(search.search({ query: "vector-only-no-fts-hit", limit: 5 }));
+    const result = await Effect.runPromise(search.search({ query: "zzqmdonlymarker", limit: 5 }));
 
     expect(result.results).toHaveLength(1);
     expect(result.results[0]).toMatchObject({
@@ -456,7 +473,7 @@ description: Incomplete metadata with a stronger name hit.
     await Effect.runPromise(store.rebuild(sync));
 
     const search = new SearchService(config, store);
-    const result = await Effect.runPromise(search.search({ query: "vector-only-no-fts-hit", limit: 5 }));
+    const result = await Effect.runPromise(search.search({ query: "zzqmdonlymarker", limit: 5 }));
 
     expect(result.results).toEqual([]);
   });
