@@ -12,6 +12,8 @@ Milestone 3 is complete. Skill Catalog V1 is operational and ready for live Code
 
 The active roadmap phase is live V1 dogfood plus V1.1 retrieval, token-cost, and operator-UX improvements. Skill-library metadata cleanup is complete for the current first-party catalog. Registry, write workflows, external imports, richer progressive disclosure, and enterprise controls remain later phases. See [Roadmap](docs/ROADMAP.md).
 
+The current deterministic token-cost eval shows the static Skill Catalog MCP routing surface is slightly smaller than preloading every native skill name and description, but triggered routing is not yet cheaper because rich `search_skills` payloads dominate. V1.1 should add a compact discovery path before claiming token-cost savings for triggered routing.
+
 Public split publishing targets [Skeptomenos/skill-catalog](https://github.com/Skeptomenos/skill-catalog). The split workflow publishes a server-package-only public copy while excluding the private planning corpus, monorepo-only agent instructions, the router skill artifact, and bundled/imported skill content. The public repo is not a Codex plugin, skill bundle, or marketplace package.
 
 ## Runtime Decision

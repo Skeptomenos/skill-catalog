@@ -45,6 +45,8 @@ Exit criteria met:
 
 Goal: improve selection quality and day-to-day operation without adding write/import workflows.
 
+Current token-cost baseline: the deterministic eval over the 67-skill first-party catalog shows static MCP routing exposure is 397 characters cheaper than native skill name/description preload, but triggered routing traces are 0/7 cheaper once router body and prompt-visible rich search responses are counted.
+
 Scope:
 
 - Keep or add deterministic routing/token-cost evals for native preload versus Skill Catalog MCP routing.
