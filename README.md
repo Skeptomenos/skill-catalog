@@ -8,7 +8,9 @@ The service indexes configured skill roots recursively, exposes selection-orient
 
 Milestones 1 and 2 are complete. A runnable v1 read-only MCP server exists with SQLite FTS search, optional QMD hybrid ranking, guarded skill/reference reads, config examples, and validation tests.
 
-Milestone 3 is implemented and in final hardening: public split publishing, private-network deployment guidance, auth and admin guards, bounded stateful sessions, observability, and a read-only management UI for operating the MCP server are present.
+Milestone 3 is complete. Skill Catalog V1 is operational and ready for live Codex/OpenCode dogfood: public split publishing, private-network deployment guidance, auth and admin guards, bounded stateful sessions, observability, a read-only management UI, and retrieval-quality hardening are present.
+
+The active roadmap phase is live V1 dogfood plus V1.1 retrieval, token-cost, and operator-UX improvements. Skill-library metadata cleanup is complete for the current first-party catalog. Registry, write workflows, external imports, richer progressive disclosure, and enterprise controls remain later phases. See [Roadmap](docs/ROADMAP.md).
 
 Public split publishing targets [Skeptomenos/skill-catalog](https://github.com/Skeptomenos/skill-catalog). The split workflow publishes a server-package-only public copy while excluding the private planning corpus, monorepo-only agent instructions, the router skill artifact, and bundled/imported skill content. The public repo is not a Codex plugin, skill bundle, or marketplace package.
 
@@ -51,13 +53,15 @@ The example config uses `server.bearer_token_env: SKILL_CATALOG_TOKEN`, so `SKIL
 |-----------|-------|
 | 1 | Done - design docs, architecture, session context, and v1 implementation plan |
 | 2 | Done - runnable read-only MCP server with SQLite metadata search and optional QMD hybrid ranking |
-| 3 | Implemented/final hardening - server-package public split publishing, operational deployment, management UI, and auth/admin/audit hardening |
-| 4+ | Registry, write workflow, quality gates, ACLs, MCP resources, and richer progressive disclosure |
+| 3 | Done - server-package public split publishing, operational deployment, management UI, auth/admin/audit hardening, and retrieval hardening |
+| 4 | Active - live Codex/OpenCode dogfood; first-party skill-library metadata cleanup complete |
+| 5+ | V1.1 retrieval/token-cost/UX, registry/write workflows, import security review, MCP resources, packaging, and enterprise controls |
 
 ## Documentation
 
 - [Design](docs/DESIGN.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Roadmap](docs/ROADMAP.md)
 - [Deployment](docs/DEPLOYMENT.md)
 
 ## References

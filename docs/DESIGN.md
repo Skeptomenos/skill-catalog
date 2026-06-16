@@ -352,20 +352,15 @@ V1 should allow all file extensions under the skill directory, guarded by path, 
 
 ## Future Backlog
 
-- MCP resources such as `skill://writing-plans/SKILL.md`.
-- MCP prompts for reusable router workflows.
-- Codex plugin packaging.
-- OpenCode plugin packaging or enforcement hooks.
-- Registry with persisted IDs, versioning, source metadata, and publishing workflow.
-- Skill write/create workflow with quality gates.
-- Skill import workflow with security review before catalog integration.
-- Frontmatter requirements for `when_to_use`, `when_not_to_use`, `category`, and `triggers`.
-- Frontmatter requirements for `author`, `version`, and normalized `source`.
-- Reference-file manifests.
-- Frontmatter on reference files for deeper progressive disclosure.
-- OAuth and ACLs for internal/company deployment.
-- Audit log dashboard and usage analytics.
-- Ingestion-time secret scan and binary policy enforcement.
+The big-picture roadmap is tracked in [Roadmap](ROADMAP.md). In short:
+
+- Active V1 live dogfood with Codex and OpenCode.
+- First-party skill-library metadata cleanup complete; keep capturing real retrieval misses.
+- V1.1 retrieval, token-cost, and operator-UX improvements.
+- Registry and internal `skill-patch` workflow before source mutation.
+- External import with security review before trust.
+- MCP resources, prompts, and packaging after the tool contract is stable.
+- Enterprise OAuth, ACLs, shared rate limiting, audit retention, and policy controls for shared deployments.
 
 ## Open Questions
 
