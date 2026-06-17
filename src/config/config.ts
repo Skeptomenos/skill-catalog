@@ -160,6 +160,11 @@ function defaultRawConfig(): RawConfig {
     },
     roots: [
       {
+        name: "skill-catalog-internal-skills",
+        path: path.join(aiDevRoot, "_infra/skill-catalog/skills"),
+        default_trust_status: "trusted"
+      },
+      {
         name: "ai-dev-skills",
         path: path.join(aiDevRoot, "_infra/skills/skills"),
         default_trust_status: "trusted"

@@ -12,6 +12,9 @@ server:
   session_mode: stateful
 
 roots:
+  - name: skill-catalog-internal-skills
+    path: ${AI_DEV_ROOT}/_infra/skill-catalog/skills
+    default_trust_status: trusted
   - name: ai-dev-skills
     path: ${AI_DEV_ROOT}/_infra/skills/skills
     default_trust_status: trusted

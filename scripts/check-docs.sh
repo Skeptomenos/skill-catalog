@@ -63,14 +63,13 @@ rm -rf "$PUBLIC_ARTIFACT/_planning"
 rm -rf "$PUBLIC_ARTIFACT/integrations/skill-router"
 rm -rf "$PUBLIC_ARTIFACT/fixtures"
 rm -rf "$PUBLIC_ARTIFACT/skill-fixtures"
-rm -rf "$PUBLIC_ARTIFACT/skills"
 rm -rf "$PUBLIC_ARTIFACT/bundled-skills"
 rm -rf "$PUBLIC_ARTIFACT/imported-skills"
 rm -rf "$PUBLIC_ARTIFACT/.codex-plugin"
 rm -rf "$PUBLIC_ARTIFACT/marketplace"
 rm -f "$PUBLIC_ARTIFACT/AGENTS.md"
 
-for required_file in package.json src/index.ts config/skill-catalog.example.yaml README.md docs/ARCHITECTURE.md docs/DEPLOYMENT.md docs/DESIGN.md; do
+for required_file in package.json src/index.ts config/skill-catalog.example.yaml README.md docs/ARCHITECTURE.md docs/DEPLOYMENT.md docs/DESIGN.md skills/skill-install/SKILL.md skills/skill-install/scripts/install.py; do
   [[ -f "$PUBLIC_ARTIFACT/$required_file" ]] \
     || fail "public split artifact missing required file '$required_file'"
 done

@@ -4,6 +4,8 @@
 
 V1 is a read-only MCP server. It indexes skill metadata and serves skill files. It does not mutate source files, execute scripts, install skills, or manage other MCP servers.
 
+Local native wrapper skills are not part of the V1 or V1.1 server boundary. A wrapper is a client-local `SKILL.md` that delegates to `read_skill` for a fixed catalog skill. Wrapper generation and installation write to client skill directories, so they belong after skill generation, contribution review, security review, and later packaging/client-integration work, not the read-only server API.
+
 V1 uses pnpm and the stable monolithic `@modelcontextprotocol/sdk@1.29.0` for the first MVP PR. The MCP TypeScript SDK v2 split packages are still alpha, so the transport adapter should be isolated for a later mechanical migration when v2 stabilizes.
 
 Streamable HTTP is stateful by default. The server should create session IDs for normal deployments and allow stateless mode through config for simple local/API-style use.
@@ -75,11 +77,11 @@ The service must be able to delete and rebuild SQLite state from configured root
 The Skill Catalog public split must continue to remove:
 
 - private planning corpus
-- bundled skill artifacts such as `integrations/skill-router/`
-- any future imported or fixture skill content
+- bundled integration artifacts such as `integrations/skill-router/`
+- private skill-library, external imported, or fixture skill content
 - monorepo-only agent instructions
 
-The split should publish a server-package-only public copy: MCP server implementation, docs, and package/config files. It must not publish the private planning corpus, skill-library content, Codex plugin packaging, or bundled skill artifacts.
+The split should publish a server-package-only public copy: MCP server implementation, docs, package/config files, and Skill Catalog internal skills under `skills/`. It must not publish the private planning corpus, private or external skill-library content, Codex plugin packaging, or bundled integration artifacts.
 
 ## Config Sketch
 
@@ -95,6 +97,9 @@ server:
   session_mode: stateful
 
 roots:
+  - name: skill-catalog-internal-skills
+    path: ${AI_DEV_ROOT}/_infra/skill-catalog/skills
+    default_trust_status: trusted
   - name: ai-dev-skills
     path: ${AI_DEV_ROOT}/_infra/skills/skills
     default_trust_status: trusted
@@ -129,7 +134,7 @@ Config loading and runtime services expose Effect-returning methods, but V1 comp
 
 Configured paths are expanded and validated at startup. V1 supports environment-variable substitution for portable deployment configs and fails fast when a configured root does not exist, is not a directory, or is a symlink while `limits.follow_symlinks` is false. Scan-time sync errors remain for files and directories discovered below valid roots, and scanner-level root checks remain as defense-in-depth if filesystem state changes before an admin rebuild.
 
-Path values may be absolute, home-relative with `~`, environment-substituted such as `${AI_DEV_ROOT}/_infra/skills/skills`, or relative to the config file directory. The preferred integration-test default is repo-root-relative derivation with an explicit environment override for unusual layouts.
+Path values may be absolute, home-relative with `~`, environment-substituted such as `${AI_DEV_ROOT}/_infra/skill-catalog/skills` or `${AI_DEV_ROOT}/_infra/skills/skills`, or relative to the config file directory. The preferred integration-test default is repo-root-relative derivation with an explicit environment override for unusual layouts.
 
 `server.session_mode` accepts `stateful` or `stateless`. Stateful is the default and should use secure random session IDs. Stateless mode should set the SDK transport's session ID generator to `undefined`.
 
@@ -491,6 +496,7 @@ V3+:
 - ACLs by root, category, and skill.
 - Strong auth-aware rate limiting at the gateway or shared backing store.
 - Registry source metadata.
+- Contribution proposal state and version-aware review history.
 - Skill security review before external skill import/integration.
 - Ingestion-time secret scan.
 - Trusted/untrusted skill states.
@@ -514,6 +520,19 @@ Install target:
 
 Do not install every cataloged skill into native global skill locations.
 
+Future native wrapper behavior:
+
+- Generate wrappers only for an explicit pinned subset of trusted skills.
+- Keep wrapper `SKILL.md` content minimal: frontmatter plus one instruction to call `read_skill` for the catalog skill.
+- Do not copy catalog references, scripts, or assets into wrappers.
+- Include catalog provenance such as skill name, registry ID when available, version, and content hash.
+- Use client-specific manual-only metadata where supported, for example Codex `allow_implicit_invocation: false` and Claude Code `disable-model-invocation: true`.
+- Count wrappers in token-cost evals before shipping any install workflow.
+- Treat Codex app slash-list visibility as native enabled-skill visibility, not a separate slash-command file.
+- Keep install/sync tooling out of the MCP server until packaging or a dedicated client integration exists.
+
+`skills/skill-install` is the narrow internal helper for explicit local wrapper installs. It belongs to the Skill Catalog product package and may be indexed as `skill-catalog-internal-skills`, but it does not add a server-side write API or broad wrapper sync.
+
 ## Management UI
 
 Milestone 3 adds a lightweight admin UI for operating the server. The UI sits beside the MCP service and uses the same Effect-returning services for read-only status/search/read operations plus tightly scoped administrative actions.
@@ -531,6 +550,7 @@ Out of scope until registry work exists:
 - editing skill source files
 - importing external skills directly from the UI
 - publishing or approving skills
+- installing or syncing native wrapper skills on client machines
 - managing ACLs beyond displaying current auth mode
 
 ## Later MCP Resources

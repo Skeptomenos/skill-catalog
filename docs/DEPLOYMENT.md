@@ -48,6 +48,9 @@ server:
   session_mode: stateful
 
 roots:
+  - name: skill-catalog-internal-skills
+    path: ${AI_DEV_ROOT}/_infra/skill-catalog/skills
+    default_trust_status: trusted
   - name: ai-dev-skills
     path: ${AI_DEV_ROOT}/_infra/skills/skills
     default_trust_status: trusted
@@ -58,6 +61,8 @@ roots:
 storage:
   sqlite_path: ~/.cache/skill-catalog/catalog.sqlite
 ```
+
+Keep `skill-catalog-internal-skills` enabled for normal installs. It contains Skill Catalog product-owned helper skills that ship with the server, unlike private or external skill-library roots.
 
 For a private-network listener, set `server.host` to the host's Tailscale IP and put any MagicDNS name clients use in `server.allowed_hosts`:
 

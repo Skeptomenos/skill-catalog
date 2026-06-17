@@ -4,7 +4,7 @@
 
 Codex and OpenCode already support skill progressive disclosure, but they still expose available skill metadata up front. With a large global library, that initial metadata list consumes context, can be shortened or omitted, and makes skill selection less reliable.
 
-The desired system is a central catalog that agents can query only when useful. Agents should start with a tiny router skill and a small MCP surface, then search the catalog before complex work.
+The desired system is a central catalog that agents can query only when useful. Agents should start with a tiny router skill and a small MCP surface, then search the catalog before complex work. Later phases can preserve native client invocation affordances, but V1.1 should first prove the token and retrieval economics of the catalog path.
 
 ## Product Shape
 
@@ -18,6 +18,8 @@ V1 indexes configured skill roots and exposes a small set of tools:
 - `skill_catalog_status` reports sync/index health.
 
 The service does not execute skills. Skills remain instructions and resources that the calling agent reads and applies.
+
+V1 does not install skills into client machines and does not accept contributions. Later registry and contribution workflows can add controlled writes and review state after the read-only retrieval contract is stable. Client-side wrapper generation should wait until generated or imported skills can be reviewed and trusted.
 
 ## Runtime Decision
 
@@ -74,21 +76,22 @@ The project split-publishes to `Skeptomenos/skill-catalog` after the split workf
 Required exclusions for the public split:
 
 - private planning corpus
-- bundled skill artifacts, including `integrations/skill-router/`
-- any future imported or fixture skill content
+- bundled integration artifacts, including `integrations/skill-router/`
+- private skill-library, external imported, or fixture skill content
 - monorepo-only agent instructions
 
-The public repo is a server-package-only copy of this project for people outside the private `ai-dev` monorepo. It should contain the server source, package metadata, config examples, docs, and operational README content. It should not publish private planning, skill-library contents, Codex plugin packaging, or bundled skill artifacts.
+The public repo is a server-package-only copy of this project for people outside the private `ai-dev` monorepo. It should contain the server source, package metadata, config examples, docs, operational README content, and Skill Catalog internal skills under `skills/`. It should not publish private planning, private or external skill-library contents, Codex plugin packaging, or bundled integration artifacts.
 
 ## Skill Roots
 
 Skill roots are explicit config entries. V1 begins with:
 
 ```text
+${AI_DEV_ROOT}/_infra/skill-catalog/skills
 ${AI_DEV_ROOT}/_infra/skills/skills
 ```
 
-The service must not crawl arbitrary home directories or client machines. Each configured root has a stable root name and path.
+The `skill-catalog/skills` root contains first-party internal Skill Catalog skills that ship with the product and must always be indexed by a Skill Catalog install. The shared/private skill library root is a separate catalog input. The service must not crawl arbitrary home directories or client machines. Each configured root has a stable root name and path.
 
 ## Skill Identity
 
@@ -246,6 +249,9 @@ Default trust status should come from root configuration, not frontmatter alone.
 
 ```yaml
 roots:
+  - name: skill-catalog-internal-skills
+    path: ${AI_DEV_ROOT}/_infra/skill-catalog/skills
+    default_trust_status: trusted
   - name: ai-dev-skills
     path: ${AI_DEV_ROOT}/_infra/skills/skills
     default_trust_status: trusted
@@ -257,6 +263,23 @@ roots:
 V1 search ranking should remain relevance-only. `review_required` skills can appear in `search_skills` results, but ranking should not be adjusted by trust until scores are normalized well enough to avoid burying stronger external matches. V1 should surface trust warnings in result metadata instead.
 
 `blocked` is not a ranking adjustment. It is filtered before results reach normal agent-facing search and read tools.
+
+## Contribution Pipeline
+
+A useful shared catalog eventually needs a way to create, validate, review, and publish skills. That is not V1.1. Contribution touches source mutation, review authority, trust transitions, and potentially executable scripts, so it belongs after registry-owned state exists.
+
+Preferred later shape:
+
+1. A local authoring skill or tool helps a contributor draft the skill using the current Agent Skills structure.
+2. The draft is submitted through a Git-backed proposal path first, such as a pull request or dedicated proposal root, rather than direct server mutation.
+3. The catalog validates required metadata, source metadata, duplicate names, size limits, path layout, and SemVer-style version changes.
+4. The catalog records proposal state, validation results, reviewer, timestamps, and audit history as catalog-owned registry state.
+5. Security review runs before a contribution can become trusted. This review should include deterministic file checks, secret scans, binary and symlink policy, dynamic-context or script detection, and a human-review path for ambiguous instruction or script behavior.
+6. Approved skills move into trusted active roots or receive a catalog-owned trust override; rejected or blocked proposals remain visible to operators but unavailable to normal agent search/read surfaces.
+
+The server should not pretend that script safety can be fully automated. Script and dynamic-context checks can flag risk, enforce policy, and run deterministic scans, but trusted execution requires a review gate and client-side execution policy. V1 continues to never execute scripts found in skill folders.
+
+This pipeline should introduce tools only after the registry model is designed. Candidate later tools include `validate_skill_package`, `submit_skill_proposal`, `review_skill_proposal`, and `publish_skill_wrapper`. They should not be added to the V1.1 MCP surface because every added public tool increases static MCP token cost.
 
 ## Search Backends
 
@@ -297,14 +320,58 @@ Install the router skill in shared skill locations first, especially `~/.agents/
 
 Do not install every cataloged skill into native Codex/OpenCode global skill folders. That would recreate the context problem.
 
-## Codex and OpenCode Integration
+## Native Skill And Slash-Menu Compatibility
+
+Skill Catalog's central retrieval model creates a local-invocation gap: some clients expose installed local skills in command menus or explicit mention pickers. A user may want `/deploy`, `/code-review`, or `$prd` to remain visible even if the real skill body lives behind `read_skill`.
+
+Official behavior differs by client:
+
+- Codex skills are available in the CLI, IDE extension, and app. Codex starts with each skill's `name`, `description`, and file path, then loads the full `SKILL.md` when selected. In CLI/IDE, explicit invocation is through `/skills` or `$skill`. In the Codex app, enabled skills also appear in the slash command list, so a visible app slash entry is still just a local enabled skill; no separate command file is required.
+- Claude Code skills are directly invokable as `/skill-name`. The command name comes from the skill directory or command file path, not usually from frontmatter `name`. Existing `.claude/commands/*.md` files still work, but skills are the recommended richer format.
+- OpenCode exposes native skills through its skill tool and supported skill directories.
+
+A wrapper is a tiny local `SKILL.md` that exists only to appear in a client's native command or skill picker and instructs the agent to call `read_skill` with a fixed catalog skill name. It should not copy the full skill body, references, scripts, or assets.
+
+Broad wrapper sync is not V1.1. Skill Catalog may ship a small internal `skill-install` helper because it is client-local tooling that writes an explicit wrapper only when invoked, but broad wrapper generation should come after skill-generation/contribution and security-review workflows. That broader surface should expose only trusted reviewed catalog skills, not arbitrary unreviewed content.
+
+Wrapper requirements:
+
+- generated only for explicitly pinned high-value skills, not the whole catalog
+- includes minimal `name` and `description`
+- includes no scripts, dynamic shell injection, references, or assets
+- names the catalog skill and MCP tool dependency clearly
+- sets client-specific no-implicit-invocation metadata where supported, such as Codex `agents/openai.yaml` `allow_implicit_invocation: false` and Claude Code `disable-model-invocation: true`
+- carries source/provenance metadata linking back to the catalog skill ID, version, and content hash
+- refuses to install wrappers for `blocked` skills or skills without a stable trusted/reviewed state once registry review exists
+
+Wrapper risks:
+
+- Every wrapper still creates native metadata cost. For Codex especially, wrappers still contribute to the initial skills list even if the real skill body is remote. Wrapper work must include token-cost evals before claiming this improves UX without losing the context-budget benefit.
+- Wrapper content can drift from the catalog skill version unless it records and reconciles a catalog version/hash.
+- Wrapper installation writes to client-local skill directories, so it is not a read-only server feature. Broad automated installation belongs with packaging/client-integration work, not V1.1 retrieval.
+- Claude Code supports dynamic shell injection in skill content. Generated wrappers must never use it, and enterprise deployments should prefer managed policy that disables shell expansion for untrusted user/project skills.
+
+The internal `skill-install` helper is a narrow local script-plus-skill for dogfood and explicit installs. Production wrapper tooling still needs a later decision on whether wrappers are generated by a local CLI, Codex plugin, Claude plugin/managed policy, or a future server-assisted client integration.
+
+## Codex, Claude Code, and OpenCode Integration
 
 Codex documented behavior:
 
 - Skills start as metadata and full `SKILL.md` loads only when selected.
 - The initial skills list has a context budget and very large sets may be shortened or omitted.
+- Explicit invocation in CLI/IDE uses `/skills` or `$skill`.
+- In the Codex app, enabled skills also appear in the slash command list.
 - MCP servers can be configured in `config.toml`.
 - Plugins can package skills and MCP config later.
+- `agents/openai.yaml` can disable implicit invocation while preserving explicit `$skill` invocation.
+
+Claude Code documented behavior:
+
+- Skills create `/skill-name` commands and can also be invoked automatically when relevant.
+- Custom commands have been merged into skills; existing `.claude/commands/` files still work.
+- Skill command names usually come from the directory or command file path rather than frontmatter `name`.
+- `disable-model-invocation: true` makes a skill manual-only.
+- Skill content can run dynamic shell preprocessing unless disabled by policy.
 
 OpenCode documented behavior:
 
@@ -318,6 +385,7 @@ V1 integration should avoid plugins. Ship:
 - shared `skill-router` skill
 - Codex MCP config snippet
 - OpenCode MCP config snippet
+- Claude Code compatibility notes, but no broad wrapper installation
 - optional one-line global `AGENTS.md` guidance
 
 ## Token-Cost Evaluation
@@ -337,6 +405,8 @@ Current result for the 67-skill first-party catalog:
 - All-trace cheaper count including the no-skill trivial trace: 1/8.
 
 Conclusion: the current architecture keeps the native skill list small and improves centralized retrieval, but triggered routing is not yet token-cheaper with the rich `search_skills` response shape. V1.1 should design a compact `search_skills` mode or separate lightweight discovery tool, then rerun the deterministic eval before claiming token-cost savings for triggered routing.
+
+Wrapper evals are a later packaging/integration concern, separate from V1.1 catalog-routing evals. A wrapper-only scenario can improve explicit invocation UX while still being net-worse on context cost if many wrappers are installed.
 
 ## Management UI
 
@@ -374,12 +444,15 @@ The big-picture roadmap is tracked in [Roadmap](ROADMAP.md). In short:
 
 - Active V1 live dogfood with Codex and OpenCode.
 - First-party skill-library metadata cleanup complete; keep capturing real retrieval misses.
-- V1.1 retrieval, token-cost, and operator-UX improvements.
+- V1.1 token-efficiency and retrieval evals.
 - Registry and internal `skill-patch` workflow before source mutation.
+- Contribution pipeline after registry-owned proposal/review state exists.
 - External import with security review before trust.
+- Native skill/slash-menu wrapper integration after generation and security-review workflows.
 - MCP resources, prompts, and packaging after the tool contract is stable.
 - Enterprise OAuth, ACLs, shared rate limiting, audit retention, and policy controls for shared deployments.
 
 ## Open Questions
 
 - What exact QMD collection workflow should be used on the Mac Mini?
+- For enterprise contribution, should the first proposal path be Git pull requests only, or should the server own draft proposal storage after the registry model lands?

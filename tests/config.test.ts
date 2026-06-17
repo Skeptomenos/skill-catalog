@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { assertResolvedBearerToken, expandConfiguredPath, loadConfig } from "../src/config/config.js";
 import type { AppConfig } from "../src/types.js";
 
-const ENV_KEYS = ["SKILL_CATALOG_TEST_TOKEN", "SKILL_CATALOG_TEST_PATH_VAR"];
+const ENV_KEYS = ["AI_DEV_ROOT", "SKILL_CATALOG_TEST_TOKEN", "SKILL_CATALOG_TEST_PATH_VAR"];
 const savedEnv = new Map<string, string | undefined>(ENV_KEYS.map((key) => [key, process.env[key]]));
 const tempDirs: string[] = [];
 
@@ -75,6 +75,19 @@ describe("expandConfiguredPath", () => {
 });
 
 describe("loadConfig root validation", () => {
+  it("includes Skill Catalog internal skills in the default roots", async () => {
+    const aiDevRoot = path.resolve(process.cwd(), "../..");
+    process.env.AI_DEV_ROOT = aiDevRoot;
+
+    const config = await Effect.runPromise(loadConfig());
+    const internalRoot = config.roots.find((root) => root.name === "skill-catalog-internal-skills");
+
+    expect(internalRoot).toMatchObject({
+      path: path.join(aiDevRoot, "_infra/skill-catalog/skills"),
+      defaultTrustStatus: "trusted"
+    });
+  });
+
   it("parses allowed_hosts from server config", async () => {
     const tempDir = await makeTempDir();
     const root = path.join(tempDir, "skills");
