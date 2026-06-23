@@ -23,6 +23,7 @@ import type {
   ReadReferenceResponse,
   ReadSkillResponse,
   SearchResponse,
+  SearchResultItem,
   SkillRecord,
   SyncResult
 } from "../src/types.js";
@@ -37,6 +38,8 @@ const reportMarkdownFileName = "skill-routing-token-cost.md";
 
 type ToolName = "search_skills" | "read_skill" | "read_skill_reference";
 type TraceMode = "discovery_only" | "full_read";
+type CandidateScoreVariant = "not_applicable" | "with_score" | "without_score";
+type CandidateResultProjection = "rich" | "rich_limit_5" | "sparse" | "compact";
 
 export interface TextCounts {
   readonly bytes: number;
@@ -137,6 +140,54 @@ interface BreakEvenReport {
   readonly read_calls_before_exceeding_native_after_static: number | null;
 }
 
+interface CandidateTraceRankCheck {
+  readonly trace_id: string;
+  readonly call_index: number;
+  readonly name: string;
+  readonly min_rank: number;
+  readonly max_rank: number;
+  readonly actual_rank: number | null;
+  readonly ok: boolean;
+}
+
+interface CandidateTraceReport {
+  readonly trace_id: string;
+  readonly discovery_call_argument_characters: TextCounts;
+  readonly prompt_visible_result_text_characters: TextCounts;
+  readonly total_discovery_cost: TextCounts;
+  readonly delta_vs_native_preload: TextCounts;
+  readonly validated_projected_response_count: number;
+  readonly expected_skill_rank_checks: readonly CandidateTraceRankCheck[];
+}
+
+interface CandidateSchemaValidationReport {
+  readonly ok: boolean;
+  readonly output_schema_name: string;
+  readonly validated_projected_response_count: number;
+}
+
+interface CandidateContractReport {
+  readonly id: string;
+  readonly family: string;
+  readonly description: string;
+  readonly score_variant: CandidateScoreVariant;
+  readonly public_contract_weakening: boolean;
+  readonly public_contract_note: string;
+  readonly manifest_tool_names: readonly string[];
+  readonly schema_validation: CandidateSchemaValidationReport;
+  readonly mcp_tool_manifest_static_cost: SurfaceReport & { readonly approximation_note: string };
+  readonly mcp_static_session_cost: SurfaceReport;
+  readonly static_delta_vs_native_preload: TextCounts;
+  readonly preserves_static_mcp_advantage: boolean;
+  readonly discovery_call_argument_characters: TextCounts;
+  readonly prompt_visible_result_text_characters: TextCounts;
+  readonly total_discovery_cost: TextCounts;
+  readonly delta_vs_native_preload: TextCounts;
+  readonly delta_vs_current_rich_baseline: TextCounts;
+  readonly expected_skill_rank_checks: readonly CandidateTraceRankCheck[];
+  readonly traces: readonly CandidateTraceReport[];
+}
+
 export interface SkillRoutingCostEvalReport {
   readonly eval: string;
   readonly root: string;
@@ -159,6 +210,7 @@ export interface SkillRoutingCostEvalReport {
     readonly skill_router_full_body_when_triggered: SurfaceReport;
     readonly mcp_static_session_cost: SurfaceReport;
   };
+  readonly candidate_contracts: readonly CandidateContractReport[];
   readonly traces: readonly TraceReport[];
   readonly summary: {
     readonly trace_count: number;
@@ -279,6 +331,13 @@ export async function buildSkillRoutingCostEval(options: {
     for (const trace of traces) {
       traceReports.push(await executeTrace(trace, search, references, nativePreload.counts, staticSessionCost.counts, routerFullBody));
     }
+    const candidateContracts = await buildCandidateContractReports({
+      traces,
+      search,
+      nativePreload,
+      routerPreload,
+      routerFullBody
+    });
 
     const breakEven = buildBreakEven(nativePreload.counts, staticSessionCost.counts, traceReports);
     const triggeredTraceReports = traceReports.filter((trace) => !trace.no_skill_task);
@@ -318,6 +377,7 @@ export async function buildSkillRoutingCostEval(options: {
         skill_router_full_body_when_triggered: routerFullBody,
         mcp_static_session_cost: staticSessionCost
       },
+      candidate_contracts: candidateContracts,
       traces: traceReports,
       summary: {
         trace_count: traceReports.length,
@@ -346,6 +406,357 @@ export async function writeEvalReports(
   await writeFile(jsonPath, stableStringify(report), "utf8");
   await writeFile(markdownPath, renderMarkdownReport(report), "utf8");
   return { jsonPath, markdownPath };
+}
+
+async function buildCandidateContractReports(options: {
+  readonly traces: readonly EvalTrace[];
+  readonly search: SearchService;
+  readonly nativePreload: SurfaceReport;
+  readonly routerPreload: SurfaceReport;
+  readonly routerFullBody: SurfaceReport;
+}): Promise<readonly CandidateContractReport[]> {
+  const candidateDefinitions = buildCandidateDefinitions();
+  const reports: CandidateContractReport[] = [];
+  for (const definition of candidateDefinitions) {
+    const manifest = renderCandidateMcpToolManifest(definition);
+    const mcpToolManifest = {
+      ...surface(
+        `${definition.id}_mcp_tool_manifest_static_cost`,
+        "Deterministic approximation of prompt-visible Skill Catalog MCP tool names, descriptions, schemas, and annotations for this candidate contract.",
+        manifest.text
+      ),
+      approximation_note:
+        "The exact client-side MCP manifest exposure is harness-dependent, so this renders the candidate tool contract deterministically from Zod schemas without changing product code."
+    };
+    const staticSessionCost = syntheticSurface(
+      `${definition.id}_mcp_static_session_cost`,
+      "Static per-session MCP routing cost for this candidate: candidate tool manifest plus router native name + description.",
+      sumCounts([mcpToolManifest.counts, options.routerPreload.counts]),
+      [mcpToolManifest.sha256, options.routerPreload.sha256].join("\n")
+    );
+    const traces = await Promise.all(
+      options.traces.map((trace) =>
+        executeCandidateTrace(trace, definition, options.search, options.nativePreload.counts, staticSessionCost.counts, options.routerFullBody)
+      )
+    );
+    const triggeredTraces = traces.filter((trace) => !options.traces.find((fixture) => fixture.id === trace.trace_id)?.no_skill_task);
+    const argumentCounts = averageCounts(triggeredTraces.map((trace) => trace.discovery_call_argument_characters));
+    const resultTextCounts = averageCounts(triggeredTraces.map((trace) => trace.prompt_visible_result_text_characters));
+    const totalDiscoveryCost = sumCounts([staticSessionCost.counts, options.routerFullBody.counts, argumentCounts, resultTextCounts]);
+    const rankChecks = traces.flatMap((trace) => trace.expected_skill_rank_checks);
+    const failedRankChecks = rankChecks.filter((check) => !check.ok);
+    if (failedRankChecks.length > 0) {
+      throw new Error(
+        `Candidate ${definition.id} failed expected skill rank checks: ${failedRankChecks
+          .map((check) => `${check.trace_id}:${check.name} rank ${check.actual_rank ?? "missing"} expected ${check.min_rank}-${check.max_rank}`)
+          .join("; ")}`
+      );
+    }
+    const outputSchemaName = candidateSearchOutputSchemaName(definition);
+    const report: CandidateContractReport = {
+      id: definition.id,
+      family: definition.family,
+      description: definition.description,
+      score_variant: definition.scoreVariant,
+      public_contract_weakening: definition.publicContractWeakening,
+      public_contract_note: definition.publicContractNote,
+      manifest_tool_names: manifest.toolNames,
+      schema_validation: {
+        ok: true,
+        output_schema_name: outputSchemaName,
+        validated_projected_response_count: traces.reduce((sum, trace) => sum + trace.validated_projected_response_count, 0)
+      },
+      mcp_tool_manifest_static_cost: mcpToolManifest,
+      mcp_static_session_cost: staticSessionCost,
+      static_delta_vs_native_preload: diffCounts(staticSessionCost.counts, options.nativePreload.counts),
+      preserves_static_mcp_advantage: staticSessionCost.counts.characters < options.nativePreload.counts.characters,
+      discovery_call_argument_characters: argumentCounts,
+      prompt_visible_result_text_characters: resultTextCounts,
+      total_discovery_cost: totalDiscoveryCost,
+      delta_vs_native_preload: diffCounts(totalDiscoveryCost, options.nativePreload.counts),
+      delta_vs_current_rich_baseline: zeroCounts(),
+      expected_skill_rank_checks: rankChecks,
+      traces
+    };
+    reports.push(report);
+  }
+  const richBaselineCost = reports[0]?.total_discovery_cost ?? zeroCounts();
+  return reports.map((report) => ({
+    ...report,
+    delta_vs_current_rich_baseline: diffCounts(report.total_discovery_cost, richBaselineCost)
+  }));
+}
+
+interface CandidateDefinition {
+  readonly id: string;
+  readonly family: string;
+  readonly description: string;
+  readonly scoreVariant: CandidateScoreVariant;
+  readonly publicContractWeakening: boolean;
+  readonly publicContractNote: string;
+  readonly projection: CandidateResultProjection;
+  readonly searchLimit: "trace" | 5;
+  readonly toolMode: "current_search" | "same_tool_response_mode" | "additive_lightweight_tool";
+  readonly includeScore: boolean;
+}
+
+// MEASUREMENT ONLY - NOT PRODUCT CODE.
+// These candidate contracts simulate possible MCP shapes for the token-cost eval
+// preflight. Do not import them into the runtime MCP server.
+function buildCandidateDefinitions(): readonly CandidateDefinition[] {
+  return [
+    {
+      id: "rich_limit_10",
+      family: "rich_limit_10",
+      description: "Current rich search_skills contract and current trace limits.",
+      scoreVariant: "not_applicable",
+      publicContractWeakening: false,
+      publicContractNote: "Preserves the existing rich search_skills public input and output contract.",
+      projection: "rich",
+      searchLimit: "trace",
+      toolMode: "current_search",
+      includeScore: true
+    },
+    {
+      id: "rich_limit_5",
+      family: "rich_limit_5",
+      description: "Current rich search_skills contract with search trace limits reduced to 5.",
+      scoreVariant: "not_applicable",
+      publicContractWeakening: false,
+      publicContractNote: "Preserves the existing rich search_skills public contract; only the evaluated call limit changes.",
+      projection: "rich_limit_5",
+      searchLimit: 5,
+      toolMode: "current_search",
+      includeScore: true
+    },
+    {
+      id: "same_tool_sparse_schema",
+      family: "same_tool_sparse_schema",
+      description: "Same search_skills tool adds response_mode while preserving the exact rich output schema with sparse compact values.",
+      scoreVariant: "not_applicable",
+      publicContractWeakening: false,
+      publicContractNote: "Adds a response_mode input but keeps the exact rich public output schema.",
+      projection: "sparse",
+      searchLimit: "trace",
+      toolMode: "same_tool_response_mode",
+      includeScore: true
+    },
+    ...(["without_score", "with_score"] as const).map((scoreVariant) => ({
+      id: `same_tool_exact_union_${scoreVariant}`,
+      family: "same_tool_exact_union",
+      description:
+        "Same search_skills tool adds response_mode and publishes an exact rich-or-compact output union.",
+      scoreVariant,
+      publicContractWeakening: false,
+      publicContractNote: "Adds a response_mode input and an exact rich-or-compact output union; this expands but does not loosen result objects.",
+      projection: "compact" as const,
+      searchLimit: "trace" as const,
+      toolMode: "same_tool_response_mode" as const,
+      includeScore: scoreVariant === "with_score"
+    })),
+    ...(["without_score", "with_score"] as const).map((scoreVariant) => ({
+      id: `same_tool_loose_schema_${scoreVariant}`,
+      family: "same_tool_loose_schema",
+      description:
+        "Same search_skills tool adds response_mode while weakening result items to common fields plus open object passthrough.",
+      scoreVariant,
+      publicContractWeakening: true,
+      publicContractNote:
+        "Public-contract weakening candidate: result items become common fields plus open object passthrough, so clients lose the exact rich result guarantee.",
+      projection: "compact" as const,
+      searchLimit: "trace" as const,
+      toolMode: "same_tool_response_mode" as const,
+      includeScore: scoreVariant === "with_score"
+    })),
+    ...(["without_score", "with_score"] as const).map((scoreVariant) => ({
+      id: `additive_lightweight_tool_${scoreVariant}`,
+      family: "additive_lightweight_tool",
+      description:
+        "Keep rich search_skills unchanged and add discover_skills_compact for low-cost routing shortlists.",
+      scoreVariant,
+      publicContractWeakening: false,
+      publicContractNote: "Preserves existing rich search_skills and adds a separate compact discovery tool.",
+      projection: "compact" as const,
+      searchLimit: "trace" as const,
+      toolMode: "additive_lightweight_tool" as const,
+      includeScore: scoreVariant === "with_score"
+    }))
+  ];
+}
+
+async function executeCandidateTrace(
+  trace: EvalTrace,
+  definition: CandidateDefinition,
+  search: SearchService,
+  nativePreloadCost: TextCounts,
+  staticSessionCost: TextCounts,
+  routerFullBody: SurfaceReport
+): Promise<CandidateTraceReport> {
+  const searchCallResults = new Map<number, readonly string[]>();
+  const argumentCounts: TextCounts[] = [];
+  const resultTextCounts: TextCounts[] = [];
+  let validatedProjectedResponseCount = 0;
+  for (const [index, call] of trace.mcp_calls.entries()) {
+    if (call.tool !== "search_skills") {
+      continue;
+    }
+    const originalArgs = call.arguments as { query: string; limit: number; include_incomplete_metadata: boolean };
+    const limit = definition.searchLimit === "trace" ? originalArgs.limit : definition.searchLimit;
+    const result = await Effect.runPromise(
+      search.search({
+        query: originalArgs.query,
+        limit,
+        includeIncompleteMetadata: originalArgs.include_incomplete_metadata
+      })
+    );
+    const projected = projectSearchResult(result, definition);
+    validateProjectedCandidateResponse(definition, trace.id, index, projected);
+    validatedProjectedResponseCount += 1;
+    const candidateArguments = candidateCallArguments(originalArgs, definition, limit);
+    argumentCounts.push(countText(stableCompactStringify(candidateArguments)));
+    resultTextCounts.push(countText(toPromptVisibleResultText(projected)));
+    searchCallResults.set(index, result.results.map((item) => item.name));
+  }
+  const routerCost = trace.no_skill_task ? zeroCounts() : routerFullBody.counts;
+  const discoveryArguments = sumCounts(argumentCounts);
+  const discoveryResultText = sumCounts(resultTextCounts);
+  const totalDiscoveryCost = sumCounts([staticSessionCost, routerCost, discoveryArguments, discoveryResultText]);
+  const expectedSkillRankChecks = trace.expected_result_skill_names.map((expected) => {
+    const call = trace.mcp_calls[expected.call_index];
+    const resultSkillNames =
+      call?.tool === "search_skills"
+        ? searchCallResults.get(expected.call_index) ?? []
+        : call?.tool === "read_skill" || call?.tool === "read_skill_reference"
+          ? [String(call.arguments.name_or_id)]
+          : [];
+    const actualRank = resultSkillNames.indexOf(expected.name) + 1;
+    const maxRank = definition.projection === "rich_limit_5" && call?.tool === "search_skills"
+      ? Math.min(expected.max_rank, 5)
+      : expected.max_rank;
+    return {
+      trace_id: trace.id,
+      call_index: expected.call_index,
+      name: expected.name,
+      min_rank: expected.min_rank,
+      max_rank: maxRank,
+      actual_rank: actualRank > 0 ? actualRank : null,
+      ok: actualRank >= expected.min_rank && actualRank <= maxRank
+    };
+  });
+  return {
+    trace_id: trace.id,
+    discovery_call_argument_characters: discoveryArguments,
+    prompt_visible_result_text_characters: discoveryResultText,
+    total_discovery_cost: totalDiscoveryCost,
+    delta_vs_native_preload: diffCounts(totalDiscoveryCost, nativePreloadCost),
+    validated_projected_response_count: validatedProjectedResponseCount,
+    expected_skill_rank_checks: expectedSkillRankChecks
+  };
+}
+
+function validateProjectedCandidateResponse(
+  definition: CandidateDefinition,
+  traceId: string,
+  callIndex: number,
+  projected: unknown
+): void {
+  const schema = candidateSearchOutputSchema(definition);
+  const parsed = schema.safeParse(projected);
+  if (!parsed.success) {
+    throw new Error(
+      `Candidate ${definition.id} projected response failed ${candidateSearchOutputSchemaName(
+        definition
+      )} validation for trace ${traceId} call ${callIndex}: ${z.prettifyError(parsed.error)}`
+    );
+  }
+}
+
+export function validateProjectedCandidateResponseForTest(
+  candidateId: string,
+  projected: unknown,
+  traceId: string,
+  callIndex: number
+): void {
+  validateProjectedCandidateResponse(findCandidateDefinition(candidateId), traceId, callIndex, projected);
+}
+
+export function renderCandidateMcpToolManifestForTest(candidateId: string): {
+  readonly text: string;
+  readonly toolNames: readonly string[];
+} {
+  return renderCandidateMcpToolManifest(findCandidateDefinition(candidateId));
+}
+
+function findCandidateDefinition(candidateId: string): CandidateDefinition {
+  const definition = buildCandidateDefinitions().find((candidate) => candidate.id === candidateId);
+  if (!definition) {
+    throw new Error(`Unknown candidate contract: ${candidateId}`);
+  }
+  return definition;
+}
+
+function candidateCallArguments(
+  originalArgs: { readonly query: string; readonly limit: number; readonly include_incomplete_metadata: boolean },
+  definition: CandidateDefinition,
+  limit: number
+): Record<string, unknown> {
+  if (definition.toolMode === "additive_lightweight_tool") {
+    return {
+      query: originalArgs.query,
+      limit
+    };
+  }
+  if (definition.toolMode === "same_tool_response_mode") {
+    return {
+      query: originalArgs.query,
+      limit,
+      include_incomplete_metadata: originalArgs.include_incomplete_metadata,
+      response_mode: "compact"
+    };
+  }
+  return {
+    query: originalArgs.query,
+    limit,
+    include_incomplete_metadata: originalArgs.include_incomplete_metadata
+  };
+}
+
+function projectSearchResult(result: SearchResponse, definition: CandidateDefinition): SearchResponse | Record<string, unknown> {
+  if (definition.projection === "rich" || definition.projection === "rich_limit_5") {
+    return result;
+  }
+  if (definition.projection === "sparse") {
+    return {
+      query: result.query,
+      results: result.results.map((item) => ({
+        ...item,
+        source: null,
+        triggers: [],
+        when_to_use: [],
+        when_not_to_use: [],
+        warnings: item.warnings.map((warning) => ({ code: warning.code, message: "" })),
+        why_match: item.matched_fields.length > 0 ? `Matched ${item.matched_fields.join(", ")}.` : ""
+      }))
+    };
+  }
+  return {
+    query: result.query,
+    results: result.results.map((item) => compactSearchResultItem(item, definition.includeScore))
+  };
+}
+
+function compactSearchResultItem(item: SearchResultItem, includeScore: boolean): Record<string, unknown> {
+  return {
+    id: item.id,
+    name: item.name,
+    description: item.description,
+    category: item.category,
+    trust_status: item.trust_status,
+    matched_backends: item.matched_backends,
+    matched_fields: item.matched_fields,
+    warning_codes: item.warnings.map((warning) => warning.code),
+    ...(includeScore ? { score: item.score } : {})
+  };
 }
 
 async function executeTrace(
@@ -574,19 +985,43 @@ function buildConclusion(
 }
 
 function renderMcpToolManifest(): string {
-  const manifest = [
-    {
-      name: "search_skills",
-      title: "Search Skills",
-      description: "Search the read-only skill catalog and return selection metadata.",
-      input_schema: z.toJSONSchema(z.object(SearchInputSchema)),
-      output_schema_name: "SearchOutputSchema",
-      output_schema: z.toJSONSchema(SearchOutputSchema),
-      annotations: {
-        readOnlyHint: true,
-        openWorldHint: false
-      }
-    },
+  return stableStringify(currentMcpTools());
+}
+
+function renderCandidateMcpToolManifest(definition: CandidateDefinition): {
+  readonly text: string;
+  readonly toolNames: readonly string[];
+} {
+  const tools =
+    definition.toolMode === "additive_lightweight_tool"
+      ? [...currentMcpTools(), discoverSkillsCompactTool(definition.includeScore)]
+      : [
+          searchSkillsTool({
+            inputSchema: definition.toolMode === "same_tool_response_mode" ? responseModeSearchInputSchema() : z.object(SearchInputSchema),
+            outputSchemaName: candidateSearchOutputSchemaName(definition),
+            outputSchema: candidateSearchOutputSchema(definition)
+          }),
+          ...nonSearchMcpTools()
+        ];
+  return {
+    text: stableStringify(tools),
+    toolNames: tools.map((tool) => tool.name)
+  };
+}
+
+function currentMcpTools(): readonly ToolManifestEntry[] {
+  return [
+    searchSkillsTool({
+      inputSchema: z.object(SearchInputSchema),
+      outputSchemaName: "SearchOutputSchema",
+      outputSchema: SearchOutputSchema
+    }),
+    ...nonSearchMcpTools()
+  ];
+}
+
+function nonSearchMcpTools(): readonly ToolManifestEntry[] {
+  return [
     {
       name: "read_skill",
       title: "Read Skill",
@@ -624,7 +1059,132 @@ function renderMcpToolManifest(): string {
       }
     }
   ];
-  return stableStringify(manifest);
+}
+
+interface ToolManifestEntry {
+  readonly name: string;
+  readonly title: string;
+  readonly description: string;
+  readonly input_schema: unknown;
+  readonly output_schema_name: string;
+  readonly output_schema: unknown;
+  readonly annotations: {
+    readonly readOnlyHint: true;
+    readonly openWorldHint: false;
+  };
+}
+
+function searchSkillsTool(options: {
+  readonly inputSchema: z.ZodType;
+  readonly outputSchemaName: string;
+  readonly outputSchema: z.ZodType;
+}): ToolManifestEntry {
+  return {
+    name: "search_skills",
+    title: "Search Skills",
+    description: "Search the read-only skill catalog and return selection metadata.",
+    input_schema: z.toJSONSchema(options.inputSchema),
+    output_schema_name: options.outputSchemaName,
+    output_schema: z.toJSONSchema(options.outputSchema),
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: false
+    }
+  };
+}
+
+function discoverSkillsCompactTool(includeScore: boolean): ToolManifestEntry {
+  return {
+    name: "discover_skills_compact",
+    title: "Discover Skills Compact",
+    description: "Return a compact shortlist of catalog skills for low-cost routing.",
+    input_schema: z.toJSONSchema(
+      z.object({
+        query: z.string().min(1),
+        limit: z.number().int().min(1).optional()
+      })
+    ),
+    output_schema_name: includeScore ? "CompactSearchOutputWithScoreSchema" : "CompactSearchOutputWithoutScoreSchema",
+    output_schema: z.toJSONSchema(compactSearchOutputSchema(includeScore)),
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: false
+    }
+  };
+}
+
+function responseModeSearchInputSchema(): z.ZodType {
+  return z.object({
+    ...SearchInputSchema,
+    response_mode: z.enum(["rich", "compact"]).default("rich").optional()
+  });
+}
+
+function candidateSearchOutputSchemaName(definition: CandidateDefinition): string {
+  if (definition.toolMode === "additive_lightweight_tool") {
+    return definition.includeScore ? "CompactSearchOutputWithScoreSchema" : "CompactSearchOutputWithoutScoreSchema";
+  }
+  if (definition.family === "same_tool_exact_union") {
+    return definition.includeScore ? "RichOrCompactSearchOutputWithScoreSchema" : "RichOrCompactSearchOutputWithoutScoreSchema";
+  }
+  if (definition.family === "same_tool_loose_schema") {
+    return definition.includeScore ? "LooseSearchOutputWithScoreSchema" : "LooseSearchOutputWithoutScoreSchema";
+  }
+  return "SearchOutputSchema";
+}
+
+// MEASUREMENT ONLY - NOT PRODUCT CODE.
+// This schema builder mirrors simulated candidate payloads for eval accounting;
+// runtime MCP schemas live in src/mcp/schemas.ts.
+function candidateSearchOutputSchema(definition: CandidateDefinition): z.ZodType {
+  if (definition.toolMode === "additive_lightweight_tool") {
+    return compactSearchOutputSchema(definition.includeScore);
+  }
+  if (definition.family === "same_tool_exact_union") {
+    return z.union([SearchOutputSchema, compactSearchOutputSchema(definition.includeScore)]);
+  }
+  if (definition.family === "same_tool_loose_schema") {
+    return looseSearchOutputSchema(definition.includeScore);
+  }
+  return SearchOutputSchema;
+}
+
+function compactSearchOutputSchema(includeScore: boolean): z.ZodType {
+  const compactItem = z.object({
+    id: z.string(),
+    name: z.string(),
+    description: z.string(),
+    category: z.string().nullable(),
+    trust_status: z.enum(["trusted", "review_required", "blocked"]),
+    matched_backends: z.array(z.string()),
+    matched_fields: z.array(z.string()),
+    warning_codes: z.array(z.string()),
+    ...(includeScore ? { score: z.number() } : {})
+  });
+  return z.object({
+    query: z.string(),
+    results: z.array(compactItem)
+  });
+}
+
+function looseSearchOutputSchema(includeScore: boolean): z.ZodType {
+  const commonItem = z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      description: z.string(),
+      category: z.string().nullable(),
+      trust_status: z.enum(["trusted", "review_required", "blocked"]),
+      matched_backends: z.array(z.string()),
+      matched_fields: z.array(z.string()),
+      warning_codes: z.array(z.string()).optional(),
+      ...(includeScore ? { score: z.number().optional() } : {})
+    })
+    .catchall(z.unknown());
+  return z.object({
+    query: z.string(),
+    results: z.array(commonItem)
+  });
 }
 
 function renderMarkdownReport(report: SkillRoutingCostEvalReport): string {
@@ -680,6 +1240,55 @@ function renderMarkdownReport(report: SkillRoutingCostEvalReport): string {
   lines.push(
     `MCP manifest note: ${report.surfaces.mcp_tool_manifest_static_cost.approximation_note}`
   );
+  lines.push("");
+  lines.push("## Compact Discovery Candidate Contracts");
+  lines.push("");
+  lines.push(
+    "These are measurement-only candidate contracts. They do not select or implement a final MCP API contract."
+  );
+  lines.push("");
+  lines.push(
+    "| Candidate | Public Contract | Schema Validation | Tools | Static Chars | Static Delta | Preserves Static Advantage | Avg Args Chars | Avg Result Chars | Total Triggered Chars | Delta vs Native | Delta vs Rich | Rank Checks |"
+  );
+  lines.push("|---|---|---|---|---:|---:|---|---:|---:|---:|---:|---:|---|");
+  for (const candidate of report.candidate_contracts) {
+    const okChecks = candidate.expected_skill_rank_checks.filter((check) => check.ok).length;
+    lines.push(
+      `| ${candidate.id} | ${
+        candidate.public_contract_weakening ? `WEAKENING: ${candidate.public_contract_note}` : candidate.public_contract_note
+      } | ${candidate.schema_validation.ok ? "ok" : "failed"} (${candidate.schema_validation.output_schema_name}, ${
+        candidate.schema_validation.validated_projected_response_count
+      } responses) | ${candidate.manifest_tool_names.join(", ")} | ${
+        candidate.mcp_static_session_cost.counts.characters
+      } | ${formatSigned(
+        candidate.static_delta_vs_native_preload.characters
+      )} | ${candidate.preserves_static_mcp_advantage ? "yes" : "no"} | ${
+        candidate.discovery_call_argument_characters.characters
+      } | ${candidate.prompt_visible_result_text_characters.characters} | ${
+        candidate.total_discovery_cost.characters
+      } | ${formatSigned(candidate.delta_vs_native_preload.characters)} | ${formatSigned(
+        candidate.delta_vs_current_rich_baseline.characters
+      )} | ${okChecks}/${candidate.expected_skill_rank_checks.length} |`
+    );
+  }
+  lines.push("");
+  lines.push(
+    "Total triggered chars = static session exposure + router body + average triggered discovery call args + average triggered prompt-visible discovery result text."
+  );
+  lines.push("");
+  lines.push("### Candidate Rank Checks");
+  lines.push("");
+  lines.push("| Candidate | Trace | Skill | Rank | Expected | OK |");
+  lines.push("|---|---|---|---:|---|---|");
+  for (const candidate of report.candidate_contracts) {
+    for (const check of candidate.expected_skill_rank_checks) {
+      lines.push(
+        `| ${candidate.id} | ${check.trace_id} | ${check.name} | ${check.actual_rank ?? "missing"} | ${check.min_rank}-${check.max_rank} | ${
+          check.ok ? "yes" : "no"
+        } |`
+      );
+    }
+  }
   lines.push("");
   lines.push("## Trace Costs");
   lines.push("");
