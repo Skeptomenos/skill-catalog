@@ -4,7 +4,23 @@
 
 V1 is a read-only MCP server. It indexes skill metadata and serves skill files. It does not mutate source files, execute scripts, install skills, or manage other MCP servers.
 
-Local native wrapper skills are not part of the V1 or V1.1 server boundary. A wrapper is a client-local `SKILL.md` that delegates to `read_skill` for a fixed catalog skill. Wrapper generation and installation write to client skill directories, so they belong after skill generation, contribution review, security review, and later packaging/client-integration work, not the read-only server API.
+Local Invocation Shortcuts are not part of the V1 or V1.1 server boundary. An Invocation Shortcut is a client-local entry that delegates explicit invocation to `read_skill` for a fixed catalog skill. Shortcut generation and installation write to client skill directories, so they belong after contribution guardrails, security review, and later packaging/client-integration work, not the read-only server API.
+
+Phase 4 intentionally breaks the V1 read-only boundary with a controlled MCP write-tool proof of concept. The architecture contract is:
+
+- Add `create_skill`, full-package `update_skill`, `list_skill_reviews`, `get_skill_review`, `approve_skill`, `reject_skill`, and `request_skill_changes` only after registry state, validation, security checks, review IDs, and audit records exist.
+- Keep write inputs package-first: `name`, optional `target_root`, optional `package_path`, complete `SKILL.md`, and optional companion files. The server parses and validates frontmatter instead of rendering `SKILL.md` from separate metadata fields.
+- Treat `name` as globally unique skill identity and `package_path` as relative filesystem placement under a writable root.
+- Support `dry_run: true` with findings and manifest diff but no file, review, or index mutation.
+- Refuse mutation when blocking findings exist; return findings with `written: false`.
+- Write packages only when no blocking findings exist. `update_skill` is full-package replacement and deletes omitted companion files inside the existing skill directory, but it must not rename or move the skill.
+- Return findings plus `review_id` for successful writes, index changed packages as `review_required`, and use lightweight review tools to mark them `trusted`, rejected, or changes-requested.
+- Keep review tools as state-transition and audit APIs, not a server-owned review workflow engine. Agent-facing authoring, external-intake, and review instructions live in internal Skill Catalog skills.
+- Do not support `auto_approve`; approval remains a separate `approve_skill` action.
+- Reject approval when unresolved blocking findings exist; require `approval_note` when warnings are present.
+- Hide script-bearing `review_required` packages from normal search/read/reference surfaces until approved.
+- Keep rejected package files in place, reserve rejected package names, and retry rejected packages through `update_skill`.
+- Never execute scripts found inside skill packages.
 
 V1 uses pnpm and the stable monolithic `@modelcontextprotocol/sdk@1.29.0` for the first MVP PR. The MCP TypeScript SDK v2 split packages are still alpha, so the transport adapter should be isolated for a later mechanical migration when v2 stabilizes.
 
@@ -59,16 +75,18 @@ Source of truth:
 - configured skill root directories
 - each skill directory's `SKILL.md`
 - optional companion files under that skill directory
+- for Phase 4 writes, catalog-managed skill roots that `create_skill` and `update_skill` are allowed to mutate
 
 Derived state:
 
 - SQLite metadata rows
 - SQLite FTS index
+- registry, trust, approval, review, and audit records
 - sync errors
 - audit log
 - optional QMD index state outside this service
 
-The service must be able to delete and rebuild SQLite state from configured roots.
+The service must be able to delete and rebuild search/index state from configured roots. Phase 4 registry and approval state may be persisted in SQLite, but SQLite should not become the primary store for skill packages. Write tools should write `SKILL.md` and allowed companion files into a catalog-managed skill root, including `references/`, `docs/`, and `scripts/` when provided, then update registry and derived index state from those files. Strict content-digest-gated approval belongs to later enterprise review and promotion workflows, not the single-person write-tool proof of concept.
 
 ## Public Split Boundary
 
@@ -100,19 +118,30 @@ roots:
   - name: skill-catalog-internal-skills
     path: ${AI_DEV_ROOT}/_infra/skill-catalog/skills
     default_trust_status: trusted
+    writable: false
   - name: ai-dev-skills
     path: ${AI_DEV_ROOT}/_infra/skills/skills
     default_trust_status: trusted
+    writable: false
   - name: ai-dev-agent-skills
     path: ${AI_DEV_ROOT}/.agents/skills
     default_trust_status: trusted
+    writable: false
+  - name: skill-catalog-managed-skills
+    path: ${AI_DEV_ROOT}/_infra/skill-catalog/managed-skills
+    default_trust_status: review_required
+    writable: true
 
 storage:
   sqlite_path: ~/.cache/skill-catalog/catalog.sqlite
 
+config:
+  overlay_path: ~/.config/skill-catalog/config.local.yaml
+
 search:
   default_limit: 5
   max_limit: 20
+  include_review_required_by_default: true
   qmd:
     enabled: false
     collection: skill-catalog
@@ -132,9 +161,25 @@ limits:
 
 Config loading and runtime services expose Effect-returning methods, but V1 composes the runtime directly in `buildRuntime()` instead of wiring an unused Effect `Layer` graph.
 
+Skill Catalog should keep durable configuration in files, not SQLite runtime overrides. Configuration precedence should be:
+
+```text
+package defaults < main config < config overlay < environment variables
+```
+
+The admin UI may update a dedicated config overlay file such as `~/.config/skill-catalog/config.local.yaml`. Overlay edits should not silently mutate live runtime behavior. They should require an explicit config reload action or service restart.
+
+Reload must validate the full effective config before applying it. If validation fails, the previous runtime config stays active and the admin UI reports the validation errors. The effective-config view should show each setting's effective value, source layer, overlay path, and whether unapplied overlay changes are pending. This preserves AI-native inspectability, Git diffs where desired, backup/restore simplicity, and avoids hidden split-brain behavior where the config file and SQLite disagree.
+
 Configured paths are expanded and validated at startup. V1 supports environment-variable substitution for portable deployment configs and fails fast when a configured root does not exist, is not a directory, or is a symlink while `limits.follow_symlinks` is false. Scan-time sync errors remain for files and directories discovered below valid roots, and scanner-level root checks remain as defense-in-depth if filesystem state changes before an admin rebuild.
 
 Path values may be absolute, home-relative with `~`, environment-substituted such as `${AI_DEV_ROOT}/_infra/skill-catalog/skills` or `${AI_DEV_ROOT}/_infra/skills/skills`, or relative to the config file directory. The preferred integration-test default is repo-root-relative derivation with an explicit environment override for unusual layouts.
+
+Roots default to `writable: false`. Phase 4 write tools may mutate only roots explicitly configured with `writable: true`; `create_skill` should use the only configured writable root when exactly one exists, and require `target_root` when multiple writable roots exist. `update_skill` should refuse to modify skills outside writable roots. This keeps internal product skills, private library roots, and external synced roots read-only unless deliberately configured otherwise. Future deployments may configure multiple writable roots as the skill library grows.
+
+`create_skill.package_path` is optional. When omitted, the catalog should derive a safe package directory from `name`. When provided, it may contain nested safe segments such as `gog-cli/drive` to support grouped libraries while preserving the globally unique skill name, such as `gog-cli-drive`. Package paths are relative to the selected writable root and must reject absolute paths, empty segments, `..`, symlinks, and traversal.
+
+Nested grouping directories are allowed, but nested skill packages are not. A package path must not be an ancestor or descendant of another package path in the same root; otherwise one skill's reference boundary would contain another skill's `SKILL.md`.
 
 `server.session_mode` accepts `stateful` or `stateless`. Stateful is the default and should use secure random session IDs. Stateless mode should set the SDK transport's session ID generator to `undefined`.
 
@@ -199,6 +244,8 @@ Rules:
 - Include normalized portable metadata (`author`, `version`, `source`) and catalog-owned operational metadata (`source_root`, `trust_status`, `warnings`).
 - `include_incomplete_metadata` defaults to `true`. When set to `false`, search excludes results with metadata warnings or empty selection metadata arrays (`triggers`, `when_to_use`, `when_not_to_use`). The same filter is applied to FTS results and to the candidate skill set passed to QMD.
 - Keep ranking relevance-only in V1; trust status and warnings do not change score ordering.
+- Include `review_required` skills by default when `search.include_review_required_by_default` is true. Phase 4 admin UI should expose this policy. When disabled, normal search excludes `review_required` skills while status/admin diagnostics still show them.
+- Exclude review-required skills that contain scripts from normal search until approved, regardless of `search.include_review_required_by_default`.
 - Exclude `blocked` skills from normal search results. Blocked skills remain indexed for status and admin diagnostics only.
 
 ### `read_skill`
@@ -229,6 +276,8 @@ Rules:
 - Return only `SKILL.md`.
 - Do not include companion file manifests in v1.
 - Enforce `max_skill_bytes`; oversized `SKILL.md` reads return an error in V1 rather than a metadata-only response.
+- Allow `review_required` reads by default when the review-required visibility policy allows them, and return trust/warning metadata once Phase 4 registry review state exists.
+- Reject normal reads for review-required skills that contain scripts until approved; expose them through status/admin/review surfaces instead.
 - Reject `blocked` skills.
 
 ### `read_skill_reference`
@@ -293,6 +342,7 @@ Rules:
 - Resolve the path against the skill directory.
 - Reject path traversal.
 - Reject `blocked` skills.
+- Reject normal reference reads for review-required skills that contain scripts until approved; expose them through status/admin/review surfaces instead.
 - Reject symlinks in v1.
 - Never execute files.
 - Check file size before reading contents; oversized files return metadata with `sha256: null`.
@@ -432,6 +482,12 @@ The store keeps raw frontmatter in `metadata_json` and promotes normalized `auth
 
 Initial `source.type` values are `self`, `local_catalog`, `remote_catalog`, `git`, `website`, and `npm`.
 
+External sourcing has three distinct architecture paths:
+
+- Indexed External Root: scan externally sourced files already present under a configured Source Root, usually defaulting to `review_required`.
+- Skill-Assisted External Intake: let an agent fetch/inspect external content and submit a package through `create_skill`; the server validates and stores the submitted package but does not own acquisition.
+- External Import: a later server-owned acquisition pipeline that resolves sources, fetches files, records acquisition metadata, runs import/security checks, and integrates packages.
+
 `source` is required for new skills and imported skills. Existing legacy skills remain indexable without `source`, but metadata warnings should report missing source metadata.
 
 `author` is required for new skills. Imported skills may use `author: unknown` only when `source` metadata is explicit enough to trace the origin. Existing legacy skills remain indexable without `author`, but metadata warnings should report missing author metadata.
@@ -461,12 +517,12 @@ Source metadata does not imply trust. Until an import security review exists, ex
 
 A later import workflow should run a skill security review before external skills are integrated into the catalog. After that gate exists, active catalog skills should be trusted by construction because external imports must pass the review before integration.
 
-Trust and review status belong in catalog-owned state, not skill frontmatter. Search/status/UI responses should combine portable skill metadata from frontmatter with local catalog metadata such as `source_root`, `trust_status`, review result, reviewer, timestamp, and warnings.
+Trust and review status belong in catalog-owned state, not skill frontmatter. Search/status/UI responses should combine portable skill metadata from frontmatter with local catalog metadata such as `source_root`, `trust_status`, review result, actor string where available, timestamp, and warnings.
 
 Trust status values:
 
 - `trusted`: catalog-local trust is satisfied
-- `review_required`: indexed and visible, but not reviewed yet
+- `review_required`: catalog trust is not satisfied yet; visibility follows the review-required visibility policy
 - `blocked`: indexed for operator diagnostics but excluded from normal search and read surfaces
 
 Default trust status comes from root configuration. Catalog-owned per-skill trust state can override the root default later. Do not derive trust solely from frontmatter `source`: a skill with a Git source can become trusted after review by moving into or being approved under a trusted catalog root.
@@ -495,8 +551,9 @@ V3+:
 - OAuth identity.
 - ACLs by root, category, and skill.
 - Strong auth-aware rate limiting at the gateway or shared backing store.
-- Registry source metadata.
-- Contribution proposal state and version-aware review history.
+- Current-state registry source metadata, review IDs, and optional content digests.
+- Enterprise contribution proposal state, promotion workflows, and version-aware review audit history.
+- Review event webhooks or workflow integrations for ticket systems, Slack, and similar tools.
 - Skill security review before external skill import/integration.
 - Ingestion-time secret scan.
 - Trusted/untrusted skill states.
@@ -520,22 +577,22 @@ Install target:
 
 Do not install every cataloged skill into native global skill locations.
 
-Future native wrapper behavior:
+Future Invocation Shortcut behavior:
 
-- Generate wrappers only for an explicit pinned subset of trusted skills.
-- Keep wrapper `SKILL.md` content minimal: frontmatter plus one instruction to call `read_skill` for the catalog skill.
-- Do not copy catalog references, scripts, or assets into wrappers.
+- Generate shortcuts only for an explicit pinned subset of trusted skills.
+- Keep generated `SKILL.md` shortcut content minimal: frontmatter plus one instruction to call `read_skill` for the catalog skill.
+- Do not copy catalog references, scripts, or assets into shortcuts.
 - Include catalog provenance such as skill name, registry ID when available, version, and content hash.
 - Use client-specific manual-only metadata where supported, for example Codex `allow_implicit_invocation: false` and Claude Code `disable-model-invocation: true`.
-- Count wrappers in token-cost evals before shipping any install workflow.
+- Count shortcuts in token-cost evals before shipping any install workflow.
 - Treat Codex app slash-list visibility as native enabled-skill visibility, not a separate slash-command file.
 - Keep install/sync tooling out of the MCP server until packaging or a dedicated client integration exists.
 
-`skills/skill-install` is the narrow internal helper for explicit local wrapper installs. It belongs to the Skill Catalog product package and may be indexed as `skill-catalog-internal-skills`, but it does not add a server-side write API or broad wrapper sync.
+`skills/skill-install` is the narrow internal helper for explicit local shortcut installs. It belongs to the Skill Catalog product package and may be indexed as `skill-catalog-internal-skills`, but it does not add a server-side write API or broad shortcut sync. The future user-facing product action should be named `install-slash-command`; the durable domain object is an Invocation Shortcut.
 
 ## Management UI
 
-Milestone 3 adds a lightweight admin UI for operating the server. The UI sits beside the MCP service and uses the same Effect-returning services for read-only status/search/read operations plus tightly scoped administrative actions.
+V1 includes a lightweight admin UI for operating the server. The UI sits beside the MCP service and uses the same Effect-returning services for read-only status/search/read operations plus tightly scoped administrative actions.
 
 Initial UI scope:
 
@@ -543,14 +600,16 @@ Initial UI scope:
 - smoke-test panel for `search_skills`, `read_skill`, and `read_skill_reference`
 - audit-log viewer for searches and reads
 - derived-index controls such as rebuild/resync
-- effective-config view for session mode, roots, limits, QMD, and auth environment variables
+- effective-config view for session mode, roots, limits, QMD, auth environment variables, config overlay path, and source layer per value
+- config overlay write and explicit reload controls after full effective-config validation exists
+- Phase 4 control for whether `review_required` skills appear in normal search/read surfaces
 
 Out of scope until registry work exists:
 
 - editing skill source files
 - importing external skills directly from the UI
-- publishing or approving skills
-- installing or syncing native wrapper skills on client machines
+- making skills trusted/active or approving skills through the UI
+- installing or syncing Invocation Shortcuts on client machines
 - managing ACLs beyond displaying current auth mode
 
 ## Later MCP Resources

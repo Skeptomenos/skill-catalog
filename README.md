@@ -10,11 +10,11 @@ Milestones 1 and 2 are complete. A runnable v1 read-only MCP server exists with 
 
 Milestone 3 is complete. Skill Catalog V1 is operational and ready for live Codex/OpenCode dogfood: public split publishing, private-network deployment guidance, auth and admin guards, bounded stateful sessions, observability, a read-only management UI, and retrieval-quality hardening are present.
 
-The active roadmap phase is live V1 dogfood plus V1.1 retrieval and token-cost evals. Skill-library metadata cleanup is complete for the current first-party catalog. Registry, write workflows, contribution review, external imports, native skill/slash-menu integration, richer progressive disclosure, and enterprise controls remain later phases. See [Roadmap](docs/ROADMAP.md).
+The active roadmap phase is live V1 dogfood plus V1.1 retrieval and token-cost evals. Skill-library metadata cleanup is complete for the current first-party catalog. Registry, write workflows, lightweight contribution/review guardrails, external imports, native skill/slash-menu integration, richer progressive disclosure, and enterprise controls remain later phases. See [Roadmap](docs/ROADMAP.md).
 
 The current deterministic token-cost eval shows the static Skill Catalog MCP routing surface is slightly smaller than preloading every native skill name and description, but triggered routing is not yet cheaper because rich `search_skills` payloads dominate. V1.1 should add a compact discovery path before claiming token-cost savings for triggered routing.
 
-Codex scans enabled local skills and the Codex app also shows those skills in the slash command list. `skill-router` appears there because it is installed as a normal local skill. Generated wrapper skills for catalog entries may be useful later, but wrapper installation is not V1.1 because it writes to client skill folders and can recreate native-context bloat.
+Codex scans enabled local skills and the Codex app also shows those skills in the slash command list. `skill-router` appears there because it is installed as a normal local skill. Generated Invocation Shortcuts for catalog entries may be useful later, but shortcut installation is not V1.1 because it writes to client skill folders and can recreate native-context bloat.
 
 Public split publishing targets [Skeptomenos/skill-catalog](https://github.com/Skeptomenos/skill-catalog). The split workflow publishes a server-package-only public copy while excluding the private planning corpus, monorepo-only agent instructions, the router skill artifact, and private or external skill-library content. Skill Catalog internal skills under `skills/` are part of the server package and must ship with Skill Catalog installs. The public repo is not a Codex plugin, skill bundle, or marketplace package.
 
@@ -38,7 +38,7 @@ This keeps the MCP contract conventional while giving the long-lived daemon type
 - Health endpoint: `/health`
 - Management UI: `/admin`
 
-The management UI shows root/sync diagnostics, FTS/QMD health, metadata and trust warnings, smoke checks, recent audit events, effective config, and a derived-index rebuild control. It does not create, edit, import, approve, or publish skills.
+The management UI shows root/sync diagnostics, FTS/QMD health, metadata and trust warnings, smoke checks, recent audit events, effective config, and a derived-index rebuild control. It does not create, edit, import, approve, or make skills trusted/active.
 
 The default and example configs index Skill Catalog internal skills from `${AI_DEV_ROOT}/_infra/skill-catalog/skills` as a first-party trusted root. These skills are product-owned helper workflows that must be delivered with Skill Catalog itself; they are separate from the private or external skill-library roots that the catalog can also index.
 
@@ -47,12 +47,12 @@ The example config uses `server.bearer_token_env: SKILL_CATALOG_TOKEN`, so `SKIL
 ## Non-Goals for v1
 
 - No skill creation or editing.
-- No server-side or broad managed skill installation into Codex, OpenCode, or Claude Code beyond a router skill artifact. The internal `skill-install` helper can create an explicit local wrapper, but it is client-local tooling and not part of the read-only MCP server API.
+- No server-side or broad managed skill installation into Codex, OpenCode, or Claude Code beyond a router skill artifact. The internal `skill-install` helper can create an explicit local Invocation Shortcut, but it is client-local tooling and not part of the read-only MCP server API.
 - No ACL model beyond private-network access plus bearer token.
 - No MCP resources or prompts.
 - No execution of scripts found inside skill folders.
 - No replacement for repo-local native skills.
-- No contribution, approval, import, or publishing pipeline.
+- No contribution, approval, import, or trusted/active skill mutation pipeline.
 
 ## Planned Milestones
 
@@ -62,7 +62,7 @@ The example config uses `server.bearer_token_env: SKILL_CATALOG_TOKEN`, so `SKIL
 | 2 | Done - runnable read-only MCP server with SQLite metadata search and optional QMD hybrid ranking |
 | 3 | Done - server-package public split publishing, operational deployment, management UI, auth/admin/audit hardening, and retrieval hardening |
 | 4 | Active - live Codex/OpenCode dogfood; first-party skill-library metadata cleanup complete |
-| 5+ | V1.1 retrieval/token-cost evals, registry/write workflows, import security review, native wrapper packaging, MCP resources, and enterprise controls |
+| 5+ | V1.1 retrieval/token-cost evals, registry/write workflows, import security review, native Invocation Shortcut packaging, MCP resources, and enterprise controls |
 
 ## Documentation
 
