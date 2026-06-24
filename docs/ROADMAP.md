@@ -6,6 +6,25 @@ Skill Catalog V1 is operational. The service is a read-only MCP server with SQLi
 
 The active product question is no longer "can the server work?" It is "does the catalog reliably improve real agent behavior while keeping native skill context small and keeping routing payloads cheaper than preloading native skill metadata?"
 
+## Cross-Phase Testing Requirement
+
+Starting with V1.1, each roadmap phase must include a testing-expansion sub-batch before the phase is considered complete. The test suite should grow with the product surface instead of relying on the original V1 smoke gate.
+
+Rules:
+
+- Every new public MCP tool, HTTP/admin endpoint, config behavior, state transition, and security boundary needs tests at the same layer where agents or operators depend on it.
+- Product behavior should be covered by real-runtime integration or smoke tests, not only mocked unit tests.
+- `pnpm validate` remains the default regression gate unless a deliberately heavier test, such as browser automation, is documented as an explicit non-default gate.
+- Each phase must document what is intentionally not tested yet because it belongs to a later product phase.
+
+Phase-specific testing expectations:
+
+- Phase 3 / V1.1: complete the P0/P1 server regression baseline, including real MCP SDK contract tests, admin API integration tests, read/reference edge cases, SQLite migration coverage, scanner edge cases, deterministic ranking fixtures, and QMD smoke coverage.
+- Phase 4: add write-tool, registry, review-state, writable-root, package-path, full-package update, script-bearing review-required visibility, approval/rejection/change-request, and config overlay reload tests before treating the write-capable proof of concept as done.
+- Phase 5: add external acquisition, provenance, security finding, secret/binary/symlink/script policy, blocked/rejected visibility, and import-review gate tests before server-owned import is considered safe.
+- Phase 6: add Invocation Shortcut, wrapper content, pinned trusted subset, version/hash reconciliation, MCP resource/prompt, and packaging tests before native slash-menu integration is shipped.
+- Phase 7: add OAuth, ACL, role-restricted review tool, shared rate-limit, audit-retention, and promotion-workflow tests before enterprise/shared-server deployment is accepted.
+
 ## Active Phase: V1 Live Dogfood
 
 Goal: use Skill Catalog as the real local skill discovery layer for Codex and OpenCode.
@@ -54,6 +73,7 @@ Scope:
 - Measure router-body, static MCP manifest, search-result, read-result, and selected-skill payload costs separately.
 - Revisit QMD/FTS score fusion with calibrated scoring instead of ad hoc score maxing.
 - Add targeted ranking evals before changing ranking behavior.
+- Complete the P0/P1 server regression coverage plan before expanding the public product surface beyond current read-only tools.
 - Design a metadata-only `read_skill` response for oversized `SKILL.md` files if read payload size becomes part of the token-cost problem.
 - Keep trust ranking relevance-only until FTS and QMD scores are normalized enough for predictable trust-aware ranking.
 - Do not add native Invocation Shortcut installation, contribution, approval, import, security-review, or enterprise workflows in V1.1.
