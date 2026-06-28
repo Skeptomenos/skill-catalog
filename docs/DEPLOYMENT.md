@@ -64,6 +64,65 @@ storage:
 
 Keep `skill-catalog-internal-skills` enabled for normal installs. It contains Skill Catalog product-owned helper skills that ship with the server, unlike private or external skill-library roots.
 
+## External Skill Roots
+
+Externally sourced skills should live outside the Skill Catalog server package and be added as explicit roots in the local deployment config. This keeps the public split artifact server-only while still letting a private deployment index cloned or synced skill libraries.
+
+Example for a cloned Git skill library:
+
+```bash
+mkdir -p ~/skill-catalog-external
+git clone https://github.com/google-labs-code/stitch-skills \
+  ~/skill-catalog-external/stitch-skills
+```
+
+Add the cloned library's skill-package root to `~/.config/skill-catalog/config.yaml`:
+
+```yaml
+roots:
+  - name: ai-dev-skills
+    path: ${AI_DEV_ROOT}/_infra/skills/skills
+    default_trust_status: trusted
+  - name: google-stitch-skills
+    path: ~/skill-catalog-external/stitch-skills/plugins
+    default_trust_status: review_required
+```
+
+Use `review_required` for unreviewed external roots. Source metadata does not imply local trust, and V1 does not run a security review or execute scripts found inside skill folders.
+
+After changing roots, restart the service or use the admin rebuild action. Verify the root was indexed:
+
+```bash
+TOKEN="$(tr -d '\n' < ~/.config/skill-catalog/token)"
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:7421/admin/api/status
+```
+
+The status output should include the external root name, indexed skill count, `review_required` trust status, and any metadata warnings from upstream `SKILL.md` frontmatter.
+
+## QMD Collection Maintenance
+
+If QMD is enabled with `search.qmd.collection: skill-catalog`, keep that QMD collection aligned with the same roots that Skill Catalog scans. QMD must emit filesystem paths with `--full-path`, so index the real root paths rather than symlinks.
+
+For the ai-dev root plus the Google Stitch external root:
+
+```bash
+qmd collection remove skill-catalog
+qmd collection add /Users/david.helmus \
+  --name skill-catalog \
+  --mask '{repos/ai-dev/_infra/skills/skills/**/SKILL.md,skill-catalog-external/stitch-skills/plugins/**/SKILL.md}'
+qmd embed -c skill-catalog --max-docs-per-batch 100 --max-batch-mb 20
+```
+
+Verify QMD retrieval:
+
+```bash
+qmd ls skill-catalog
+qmd query 'stitch generate design' -c skill-catalog --full-path --no-rerank -n 5
+```
+
+Expected evidence is that `qmd ls` includes the same number of `SKILL.md` files as the configured nonblocked roots, and the query returns absolute paths under the cloned external skill directory.
+
 For a private-network listener, set `server.host` to the host's Tailscale IP and put any MagicDNS name clients use in `server.allowed_hosts`:
 
 ```yaml
