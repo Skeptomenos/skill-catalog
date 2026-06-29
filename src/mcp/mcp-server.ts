@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -42,6 +43,21 @@ interface StatefulSessionState {
   initializeQueue: Promise<void>;
 }
 
+interface RequestLogContext {
+  readonly requestId: string;
+  readonly method: string;
+  readonly path: string;
+  readonly sessionId: string | null;
+  readonly startedAt: number;
+}
+
+type StructuredToolResult = {
+  structuredContent: Record<string, unknown>;
+  content: { type: "text"; text: string }[];
+};
+
+const requestLogContext = new AsyncLocalStorage<RequestLogContext>();
+
 export function createSkillCatalogMcpServer(runtime: SkillCatalogRuntime): McpServer {
   const server = new McpServer({
     name: "skill-catalog",
@@ -60,7 +76,7 @@ export function createSkillCatalogMcpServer(runtime: SkillCatalogRuntime): McpSe
         openWorldHint: false
       }
     },
-    async (input) => {
+    loggedToolHandler("search_skills", summarizeSearchInput, async (input) => {
       const result = await Effect.runPromise(
         runtime.search.search({
           query: input.query,
@@ -68,8 +84,8 @@ export function createSkillCatalogMcpServer(runtime: SkillCatalogRuntime): McpSe
           includeIncompleteMetadata: input.include_incomplete_metadata
         })
       );
-      return structuredResult(result);
-    }
+      return result;
+    })
   );
 
   server.registerTool(
@@ -84,7 +100,9 @@ export function createSkillCatalogMcpServer(runtime: SkillCatalogRuntime): McpSe
         openWorldHint: false
       }
     },
-    async (input) => structuredResult(await Effect.runPromise(runtime.references.readSkill(input.name_or_id)))
+    loggedToolHandler("read_skill", summarizeReadSkillInput, async (input) =>
+      await Effect.runPromise(runtime.references.readSkill(input.name_or_id))
+    )
   );
 
   server.registerTool(
@@ -99,10 +117,9 @@ export function createSkillCatalogMcpServer(runtime: SkillCatalogRuntime): McpSe
         openWorldHint: false
       }
     },
-    async (input) =>
-      structuredResult(
-        await Effect.runPromise(runtime.references.readReference(input.name_or_id, input.relative_path))
-      )
+    loggedToolHandler("read_skill_reference", summarizeReadReferenceInput, async (input) =>
+      await Effect.runPromise(runtime.references.readReference(input.name_or_id, input.relative_path))
+    )
   );
 
   server.registerTool(
@@ -116,7 +133,9 @@ export function createSkillCatalogMcpServer(runtime: SkillCatalogRuntime): McpSe
         openWorldHint: false
       }
     },
-    async () => structuredResult(await Effect.runPromise(runtime.store.status()))
+    loggedToolHandler("skill_catalog_status", () => ({}), async () =>
+      await Effect.runPromise(runtime.store.status())
+    )
   );
 
   return server;
@@ -142,28 +161,44 @@ export function createHttpApp(runtime: SkillCatalogRuntime): Express {
   registerManagementUi(app, runtime, bearerToken);
 
   app.all("/mcp", async (req: Request, res: Response) => {
-    if (!rateLimiter(req, res)) {
-      return;
-    }
-
-    if (!isAuthorizedBearerRequest(req, bearerToken)) {
-      res.status(401).json({
-        jsonrpc: "2.0",
-        error: {
-          code: -32001,
-          message: "Unauthorized"
-        },
-        id: null
+    const context = createRequestLogContext(req);
+    logOperationalEvent("info", "mcp_request_start", {
+      ...requestContextFields(context),
+      session_mode: runtime.config.server.sessionMode
+    });
+    res.once("finish", () => {
+      logOperationalEvent("info", "mcp_request_end", {
+        ...requestContextFields(context),
+        session_mode: runtime.config.server.sessionMode,
+        status_code: res.statusCode,
+        duration_ms: Date.now() - context.startedAt
       });
-      return;
-    }
+    });
 
-    if (runtime.config.server.sessionMode === "stateless") {
-      await handleStatelessRequest(runtime, req, res);
-      return;
-    }
+    await requestLogContext.run(context, async () => {
+      if (!rateLimiter(req, res)) {
+        return;
+      }
 
-    await handleStatefulRequest(runtime, statefulSessions, req, res);
+      if (!isAuthorizedBearerRequest(req, bearerToken)) {
+        res.status(401).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32001,
+            message: "Unauthorized"
+          },
+          id: null
+        });
+        return;
+      }
+
+      if (runtime.config.server.sessionMode === "stateless") {
+        await handleStatelessRequest(runtime, req, res);
+        return;
+      }
+
+      await handleStatefulRequest(runtime, statefulSessions, req, res);
+    });
   });
 
   return app;
@@ -365,6 +400,120 @@ function structuredResult<T>(result: T): {
     structuredContent: result as Record<string, unknown>,
     content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
   };
+}
+
+function loggedToolHandler<TInput, TResult>(
+  tool: string,
+  summarizeInput: (input: TInput) => Record<string, unknown>,
+  handler: (input: TInput) => Promise<TResult>
+): (input: TInput) => Promise<StructuredToolResult> {
+  return async (input: TInput) => {
+    const context = requestLogContext.getStore();
+    const startedAt = Date.now();
+    logOperationalEvent("info", "mcp_tool_call_start", {
+      ...requestContextFields(context),
+      tool,
+      input: summarizeInput(input)
+    });
+    try {
+      const result = await handler(input);
+      logOperationalEvent("info", "mcp_tool_call_end", {
+        ...requestContextFields(context),
+        tool,
+        outcome: "ok",
+        duration_ms: Date.now() - startedAt
+      });
+      return structuredResult(result);
+    } catch (error) {
+      logOperationalEvent("warn", "mcp_tool_call_error", {
+        ...requestContextFields(context),
+        tool,
+        outcome: "error",
+        duration_ms: Date.now() - startedAt,
+        error: errorSummary(error)
+      });
+      throw error;
+    }
+  };
+}
+
+function createRequestLogContext(req: Request): RequestLogContext {
+  const rawSessionId = req.headers["mcp-session-id"];
+  return {
+    requestId: randomUUID(),
+    method: req.method,
+    path: req.path,
+    sessionId: typeof rawSessionId === "string" ? rawSessionId : null,
+    startedAt: Date.now()
+  };
+}
+
+function requestContextFields(context: RequestLogContext | undefined): Record<string, unknown> {
+  if (!context) {
+    return { request_id: null };
+  }
+  return {
+    request_id: context.requestId,
+    method: context.method,
+    path: context.path,
+    ...(context.sessionId ? { mcp_session_id: context.sessionId } : {})
+  };
+}
+
+function summarizeSearchInput(input: {
+  readonly query: string;
+  readonly limit?: number;
+  readonly include_incomplete_metadata?: boolean;
+}): Record<string, unknown> {
+  return {
+    query: truncateForLog(input.query),
+    ...(input.limit === undefined ? {} : { limit: input.limit }),
+    ...(input.include_incomplete_metadata === undefined
+      ? {}
+      : { include_incomplete_metadata: input.include_incomplete_metadata })
+  };
+}
+
+function summarizeReadSkillInput(input: { readonly name_or_id: string }): Record<string, unknown> {
+  return { name_or_id: truncateForLog(input.name_or_id) };
+}
+
+function summarizeReadReferenceInput(input: {
+  readonly name_or_id: string;
+  readonly relative_path: string;
+}): Record<string, unknown> {
+  return {
+    name_or_id: truncateForLog(input.name_or_id),
+    relative_path: truncateForLog(input.relative_path)
+  };
+}
+
+function errorSummary(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: truncateForLog(error.message, 500)
+    };
+  }
+  return { message: truncateForLog(String(error), 500) };
+}
+
+function truncateForLog(value: string, maxLength = 200): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+}
+
+function logOperationalEvent(level: "info" | "warn", event: string, fields: Record<string, unknown>): void {
+  const line = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    component: "skill-catalog",
+    event,
+    ...fields
+  });
+  if (level === "warn") {
+    console.warn(line);
+    return;
+  }
+  console.info(line);
 }
 
 function respondMcpRateLimit(res: Response): void {

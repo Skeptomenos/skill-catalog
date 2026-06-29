@@ -170,6 +170,73 @@ Admin API `POST` requests also require `X-Skill-Catalog-Admin: true` and are rej
 
 No-auth mode is only selected by omitting `server.bearer_token_env`; it is appropriate only for tightly scoped local development on a trusted machine.
 
+## MCP Timeout Triage Runbook
+
+If a Codex or OpenCode session can discover the `skill-catalog` tool namespace but `tools/call` waits until a 300-second client timeout, first separate server health from client/session bridge state. Tool discovery alone is not proof that the current `/mcp` call path is healthy.
+
+Start with the local HTTP surfaces:
+
+```bash
+TOKEN="$(tr -d '\n' < ~/.config/skill-catalog/token)"
+
+curl -sS -w ' code=%{http_code} time=%{time_total}\n' \
+  http://127.0.0.1:7421/health
+
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  -w ' code=%{http_code} time=%{time_total}\n' \
+  http://127.0.0.1:7421/admin/api/status
+```
+
+Expected healthy evidence is `/health` returning `200`, admin status returning `200`, the configured roots and indexed counts appearing in the JSON, and `search_backends.qmd` reporting `disabled`, `ready`, or `unavailable` rather than the request hanging.
+
+Then verify that the process and catalog cache are usable:
+
+```bash
+launchctl print gui/$(id -u)/com.skill-catalog.server
+lsof -nP -iTCP:7421 -sTCP:LISTEN
+lsof -nP ~/.cache/skill-catalog/catalog.sqlite \
+  ~/.cache/skill-catalog/catalog.sqlite-wal \
+  ~/.cache/skill-catalog/catalog.sqlite-shm 2>/dev/null || true
+
+sqlite3 -readonly ~/.cache/skill-catalog/catalog.sqlite \
+  "pragma query_only=ON; pragma quick_check; select source_root, count(*) from skills group by source_root;"
+```
+
+Do not paste raw `launchctl print` output into tickets or chat without reviewing it first; the user launchd domain can include unrelated secret-bearing environment variables. The Skill Catalog LaunchAgent should use a narrow wrapper or environment, but `launchctl print` may still show inherited GUI-domain state.
+
+If QMD is enabled, verify it separately. QMD failures should not block FTS search, and status/admin diagnostics should show the latest QMD warning:
+
+```bash
+qmd ls skill-catalog
+qmd query 'stitch generate design' -c skill-catalog --full-path --no-rerank -n 5
+```
+
+For the strongest client/server split, run a direct MCP SDK smoke from the host shell. This uses the same `/mcp` protocol path as agents, but bypasses the current Codex/OpenCode session bridge:
+
+```bash
+TOKEN="$(tr -d '\n' < ~/.config/skill-catalog/token)"
+SMOKE_URL='http://127.0.0.1:7421/mcp' SMOKE_TOKEN="$TOKEN" \
+node scripts/smoke-client.mjs
+```
+
+When investigating logs, use the structured JSON lines in `~/Library/Logs/skill-catalog.out.log`. `/mcp` requests emit:
+
+- `mcp_request_start`
+- `mcp_request_end`
+- `mcp_tool_call_start`
+- `mcp_tool_call_end`
+- `mcp_tool_call_error`
+
+Interpretation:
+
+- No `mcp_request_start` near the client timeout: the request likely did not reach the Skill Catalog server; suspect client/session bridge, MCP client state, URL/auth configuration, or network routing.
+- `mcp_request_start` without `mcp_request_end`: the HTTP request entered Express but did not finish; inspect transport/session handling and process health.
+- `mcp_tool_call_start` without `mcp_tool_call_end` or `mcp_tool_call_error`: the request reached a tool handler and likely stalled in the tool path or backend it called.
+- `mcp_tool_call_error`: inspect the JSON error summary and the adjacent stderr log.
+- Fast `/health`, admin status, and direct SDK calls while one Codex session times out: treat it as a session-local MCP bridge issue and start a fresh session or restart the client before changing server code.
+
+The structured logs intentionally omit bearer tokens and skill contents. Search queries, skill names, relative reference paths, request IDs, MCP session IDs, status codes, and durations may appear to make incidents diagnosable.
+
 ## launchd Service Shape
 
 Create `~/Library/LaunchAgents/com.skill-catalog.server.plist`:

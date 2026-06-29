@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Effect } from "effect";
 import { createHttpApp, type SkillCatalogRuntime } from "../src/mcp/mcp-server.js";
 import type { AppConfig, CatalogStatus, SyncResult } from "../src/types.js";
@@ -214,6 +216,87 @@ describe("MCP HTTP server", () => {
     });
     expect(accepted.status).toBe(200);
     await expect(accepted.json()).resolves.toEqual(testStatus());
+  });
+
+  it("logs MCP request lifecycle without bearer token values", async () => {
+    process.env[TEST_TOKEN_ENV] = "admin-secret";
+    const { runtime } = testAdminRuntime({ bearerTokenEnv: TEST_TOKEN_ENV, maxRequests: 10 });
+    const { url } = await listen(createHttpApp(runtime));
+    const captured = captureConsoleInfo();
+
+    try {
+      const response = await fetch(`${url}/mcp`, {
+        headers: { authorization: "Bearer wrong-secret" }
+      });
+      expect(response.status).toBe(401);
+      await response.text();
+    } finally {
+      captured.restore();
+    }
+
+    const entries = operationalLogs(captured.entries);
+    expect(JSON.stringify(entries)).not.toContain("wrong-secret");
+    expect(entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          component: "skill-catalog",
+          event: "mcp_request_start",
+          method: "GET",
+          path: "/mcp"
+        }),
+        expect.objectContaining({
+          component: "skill-catalog",
+          event: "mcp_request_end",
+          method: "GET",
+          path: "/mcp",
+          status_code: 401
+        })
+      ])
+    );
+  });
+
+  it("logs MCP tool start and end entries with request correlation", async () => {
+    process.env[TEST_TOKEN_ENV] = "admin-secret";
+    const { runtime } = testAdminRuntime({ bearerTokenEnv: TEST_TOKEN_ENV, maxRequests: 10 });
+    const { url } = await listen(createHttpApp(runtime));
+    const captured = captureConsoleInfo();
+    const client = new Client({ name: "skill-catalog-test", version: "0.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`${url}/mcp`), {
+      requestInit: { headers: { authorization: "Bearer admin-secret" } }
+    });
+
+    try {
+      await client.connect(transport);
+      const status = await client.callTool({ name: "skill_catalog_status", arguments: {} });
+      expect(status.isError).not.toBe(true);
+    } finally {
+      await client.close().catch(() => {});
+      captured.restore();
+    }
+
+    const entries = operationalLogs(captured.entries);
+    const requestIds = entries
+      .filter((entry) => entry.event === "mcp_request_start")
+      .map((entry) => entry.request_id);
+    const toolStart = entries.find((entry) => entry.event === "mcp_tool_call_start");
+    const toolEnd = entries.find((entry) => entry.event === "mcp_tool_call_end");
+
+    expect(toolStart).toEqual(
+      expect.objectContaining({
+        component: "skill-catalog",
+        tool: "skill_catalog_status",
+        input: {}
+      })
+    );
+    expect(toolEnd).toEqual(
+      expect.objectContaining({
+        component: "skill-catalog",
+        tool: "skill_catalog_status",
+        outcome: "ok"
+      })
+    );
+    expect(requestIds).toContain(toolStart?.request_id);
+    expect(requestIds).toContain(toolEnd?.request_id);
   });
 
   it("initializes and reuses a stateful MCP session id", async () => {
@@ -488,4 +571,29 @@ function initializedNotification(): Record<string, unknown> {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function captureConsoleInfo(): { readonly entries: string[]; readonly restore: () => void } {
+  const entries: string[] = [];
+  const original = console.info;
+  console.info = (message?: unknown, ...rest: unknown[]) => {
+    entries.push([message, ...rest].map(String).join(" "));
+  };
+  return {
+    entries,
+    restore: () => {
+      console.info = original;
+    }
+  };
+}
+
+function operationalLogs(entries: readonly string[]): Array<Record<string, unknown>> {
+  return entries.flatMap((entry) => {
+    try {
+      const parsed = JSON.parse(entry) as Record<string, unknown>;
+      return parsed.component === "skill-catalog" ? [parsed] : [];
+    } catch {
+      return [];
+    }
+  });
 }
