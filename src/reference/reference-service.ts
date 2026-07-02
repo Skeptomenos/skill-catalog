@@ -19,12 +19,13 @@ export class ReferenceService {
     return Effect.gen(function* () {
       const started = Date.now();
       const skill = yield* store.getSkillByNameOrId(nameOrId);
-      yield* rejectBlockedSkill(skill);
+      yield* rejectBlockedSkill(skill, "read_skill", started, store);
       const fileStat = yield* Effect.tryPromise({
         try: () => stat(skill.skillFile),
         catch: toStorageError
       });
       if (fileStat.size > maxBytes) {
+        store.audit("read_skill", skill.name, "SKILL.md", Date.now() - started);
         return yield* Effect.fail(new LimitError(`Skill exceeds max_skill_bytes: ${skill.name}`));
       }
       const content = yield* Effect.tryPromise({
@@ -50,7 +51,7 @@ export class ReferenceService {
     return Effect.gen(function* () {
       const started = Date.now();
       const skill = yield* store.getSkillByNameOrId(nameOrId);
-      yield* rejectBlockedSkill(skill);
+      yield* rejectBlockedSkill(skill, "read_skill_reference", started, store);
       const resolved = yield* Effect.tryPromise({
         try: () => resolveReferencePath(skill, relativePath),
         catch: toPathGuardError
@@ -118,8 +119,14 @@ function toPathGuardError(error: unknown): PathGuardError {
     : new PathGuardError(error instanceof Error ? error.message : String(error));
 }
 
-function rejectBlockedSkill(skill: SkillRecord): Effect.Effect<void, StorageError> {
+function rejectBlockedSkill(
+  skill: SkillRecord,
+  tool: string,
+  started: number,
+  store: CatalogStore
+): Effect.Effect<void, StorageError> {
   if (skill.trustStatus === "blocked") {
+    store.audit(tool, skill.name, null, Date.now() - started);
     return Effect.fail(new StorageError(`Skill is blocked and cannot be read: ${skill.name}`));
   }
   return Effect.void;

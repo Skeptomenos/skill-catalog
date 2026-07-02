@@ -444,17 +444,17 @@ The deterministic token-cost eval compares Skill Catalog MCP routing against nat
 
 The eval reports bytes, characters, and `ceil(characters / 4)` approximate tokens. It does not claim exact provider billing tokens because Codex, OpenCode, Claude Code, and arbitrary model providers do not expose one uniform authoritative tokenizer for this comparison.
 
-Current result for the 67-skill first-party catalog:
+Current result for the 64-skill first-party catalog:
 
-- Native preload baseline: 15,531 characters for all skill names and descriptions.
-- Static MCP routing session surface: 15,134 characters, or 397 characters cheaper than native preload.
+- Native preload baseline: 15,082 characters for all skill names and descriptions.
+- Static MCP routing session surface: 15,134 characters, or 52 characters more expensive than native preload.
 - Router full body when triggered: 1,572 characters.
-- Average `search_skills` call prompt-visible cost: 16,155 characters.
+- Average `search_skills` call prompt-visible cost: 16,152 characters.
 - Triggered discovery traces cheaper than native preload: 0/7.
 - Triggered full-read traces cheaper than native preload: 0/7.
-- All-trace cheaper count including the no-skill trivial trace: 1/8.
+- All-trace cheaper count including the no-skill trivial trace: 0/8.
 
-Conclusion: the current architecture keeps the native skill list small and improves centralized retrieval, but triggered routing is not yet token-cheaper with the rich `search_skills` response shape. V1.1 should design a compact `search_skills` mode or separate lightweight discovery tool, then rerun the deterministic eval before claiming token-cost savings for triggered routing.
+Conclusion: the current architecture keeps the native skill list small and improves centralized retrieval, but neither the static MCP surface nor triggered routing is token-cheaper with the rich `search_skills` response shape. V1.1 should design a compact `search_skills` mode or separate lightweight discovery tool, then rerun the deterministic eval before claiming token-cost savings for routing.
 
 Invocation Shortcut evals are a later packaging/integration concern, separate from V1.1 catalog-routing evals. A shortcut-only scenario can improve explicit invocation UX while still being net-worse on context cost if many shortcuts are installed.
 

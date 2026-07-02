@@ -38,19 +38,6 @@ async function scanRoot(root: RootConfig): Promise<{ skills: SkillRecord[]; erro
   const errors: SyncError[] = [];
   try {
     const rootStat = await lstat(root.path);
-    if (!rootStat.isDirectory()) {
-      return {
-        skills,
-        errors: [
-          {
-            sourceRoot: root.name,
-            path: root.path,
-            code: "invalid_root",
-            message: "Configured root is not a directory"
-          }
-        ]
-      };
-    }
     if (rootStat.isSymbolicLink()) {
       return {
         skills,
@@ -60,6 +47,19 @@ async function scanRoot(root: RootConfig): Promise<{ skills: SkillRecord[]; erro
             path: root.path,
             code: "symlink_root",
             message: "Configured root cannot be a symlink"
+          }
+        ]
+      };
+    }
+    if (!rootStat.isDirectory()) {
+      return {
+        skills,
+        errors: [
+          {
+            sourceRoot: root.name,
+            path: root.path,
+            code: "invalid_root",
+            message: "Configured root is not a directory"
           }
         ]
       };

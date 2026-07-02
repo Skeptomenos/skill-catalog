@@ -64,7 +64,7 @@ Exit criteria met:
 
 Goal: prove and improve the token economics and retrieval quality of Skill Catalog without adding write/import, shortcut-install, or security-review workflows.
 
-Current token-cost baseline: the deterministic eval over the 67-skill first-party catalog shows static MCP routing exposure is 397 characters cheaper than native skill name/description preload, but triggered routing traces are 0/7 cheaper once router body and prompt-visible rich search responses are counted.
+Current token-cost baseline: the deterministic eval over the 64-skill first-party catalog shows static MCP routing exposure is 52 characters more expensive than native skill name/description preload, and triggered routing traces are 0/7 cheaper once router body and prompt-visible rich search responses are counted.
 
 Scope:
 

@@ -11,7 +11,6 @@ import type {
   SearchBackendWarning,
   SearchResultItem,
   SkillRecord,
-  SyncError,
   SyncStatusError,
   SyncResult
 } from "../types.js";
@@ -56,8 +55,6 @@ export interface AuditLogEntry {
 
 export class CatalogStore {
   private readonly db: Database.Database;
-  private readonly lastSyncErrors: SyncError[] = [];
-  private readonly duplicateNames: string[] = [];
   private readonly searchBackendWarnings: SearchBackendWarning[] = [];
   private qmdBackendState: "ready" | "unavailable" | null = null;
 
@@ -77,6 +74,7 @@ export class CatalogStore {
           this.db.exec("DELETE FROM skills_fts");
           this.db.exec("DELETE FROM skills");
           this.db.exec("DELETE FROM skill_sync_errors");
+          this.db.exec("DELETE FROM skill_duplicate_names");
           const insertSkill = this.db.prepare(`
             INSERT INTO skills (
               id, name, description, category, author_json, version, source_json,
@@ -125,10 +123,15 @@ export class CatalogStore {
               seen_at: seenAt
             });
           }
+
+          const insertDuplicate = this.db.prepare(
+            "INSERT INTO skill_duplicate_names (name, seen_at) VALUES (@name, @seen_at)"
+          );
+          for (const name of sync.duplicateNames) {
+            insertDuplicate.run({ name, seen_at: seenAt });
+          }
         });
         tx();
-        this.lastSyncErrors.splice(0, this.lastSyncErrors.length, ...sync.errors);
-        this.duplicateNames.splice(0, this.duplicateNames.length, ...sync.duplicateNames);
         this.audit("rebuild_index", null, null, 0);
       },
       catch: (error) => new StorageError(error instanceof Error ? error.message : String(error))
@@ -205,6 +208,14 @@ export class CatalogStore {
         const skillRows = this.db
           .prepare("SELECT source_root, root_path, COUNT(*) as count FROM skills GROUP BY source_root, root_path")
           .all() as Array<{ source_root: string; root_path: string; count: number }>;
+        const syncErrors = this.db
+          .prepare("SELECT source_root, path, code, message FROM skill_sync_errors ORDER BY id ASC")
+          .all() as SyncStatusError[];
+        const duplicateNames = (
+          this.db.prepare("SELECT name FROM skill_duplicate_names ORDER BY name ASC").all() as Array<{
+            name: string;
+          }>
+        ).map((row) => row.name);
         const roots: RootStatus[] = this.config.roots.map((root) => {
           const row = skillRows.find((candidate) => candidate.source_root === root.name);
           return {
@@ -212,14 +223,12 @@ export class CatalogStore {
             path: root.path,
             default_trust_status: root.defaultTrustStatus,
             skills_indexed: row?.count ?? 0,
-            errors: this.lastSyncErrors
-              .filter((error) => error.sourceRoot === root.name)
-              .map(toSyncStatusError)
+            errors: syncErrors.filter((error) => error.source_root === root.name)
           };
         });
         return {
           roots,
-          duplicate_names: [...this.duplicateNames],
+          duplicate_names: duplicateNames,
           metadata_warnings: this.metadataWarnings(),
           search_backends: {
             fts: this.countSkills() > 0 ? "ready" : "empty",
@@ -325,6 +334,11 @@ export class CatalogStore {
         seen_at text not null
       );
 
+      CREATE TABLE IF NOT EXISTS skill_duplicate_names(
+        name text primary key,
+        seen_at text not null
+      );
+
       CREATE TABLE IF NOT EXISTS audit_log(
         id integer primary key,
         tool text not null,
@@ -386,15 +400,6 @@ export class CatalogStore {
         : [];
     });
   }
-}
-
-function toSyncStatusError(error: SyncError): SyncStatusError {
-  return {
-    source_root: error.sourceRoot,
-    path: error.path,
-    code: error.code,
-    message: error.message
-  };
 }
 
 function toSkillDbRow(skill: SkillRecord): SkillRow {

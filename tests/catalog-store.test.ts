@@ -116,6 +116,42 @@ ${Array.from({ length: 80 }, () => "calibrationtarget").join(" ")}
     expect(sync.errors.some((error) => error.code === "duplicate_skill_name")).toBe(true);
   });
 
+  it("reports persisted sync errors and duplicate names after a store restart", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "skill-catalog-restart-"));
+    tempDirs.push(root);
+    await writeSkill(root, "one", "same", "First skill.");
+    await writeSkill(root, "two", "same", "Second skill.");
+    await writeCustomSkill(root, "broken", "---\ndescription: Missing name.\n---\n\n# Broken\n");
+    const sqliteDir = await mkdtemp(path.join(os.tmpdir(), "skill-catalog-restart-db-"));
+    tempDirs.push(sqliteDir);
+    const sqlitePath = path.join(sqliteDir, "catalog.sqlite");
+    const config: AppConfig = {
+      ...testConfig(root),
+      storage: { sqlitePath }
+    };
+
+    const firstStore = new CatalogStore(config);
+    const sync = await Effect.runPromise(scanSkillRoots(config));
+    await Effect.runPromise(firstStore.rebuild(sync));
+    const firstStatus = await Effect.runPromise(firstStore.status());
+    expect(firstStatus.duplicate_names).toEqual(["same"]);
+    expect(
+      firstStatus.roots[0]?.errors.some((error) => error.code === "missing_required_metadata")
+    ).toBe(true);
+    firstStore.close();
+
+    const restartedStore = new CatalogStore(config);
+    stores.push(restartedStore);
+    const status = await Effect.runPromise(restartedStore.status());
+
+    expect(status.duplicate_names).toEqual(["same"]);
+    expect(
+      status.roots[0]?.errors.some(
+        (error) => error.code === "missing_required_metadata" && error.path === "broken/SKILL.md"
+      )
+    ).toBe(true);
+  });
+
   it("serializes status sync errors with public snake_case fields", async () => {
     const missingRoot = path.join(os.tmpdir(), `skill-catalog-missing-${Date.now()}`);
     const config = testConfig(missingRoot);

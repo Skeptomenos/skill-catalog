@@ -81,9 +81,72 @@ describe("ReferenceService", () => {
       sha256: null
     });
   });
+
+  it("fails oversized SKILL.md reads before reading file contents", async () => {
+    const { root, config, store } = await buildReferenceFixture({ maxSkillBytes: 8 });
+    await chmod(path.join(root, "demo", "SKILL.md"), 0o000);
+    const refs = new ReferenceService(config, store);
+
+    await expect(Effect.runPromise(refs.readSkill("demo"))).rejects.toThrow(
+      /Skill exceeds max_skill_bytes/
+    );
+  });
+
+  it("returns binary reference metadata with sha256 and no inline content", async () => {
+    const { root, config, store } = await buildReferenceFixture();
+    await writeFile(
+      path.join(root, "demo", "docs", "binary.bin"),
+      Buffer.from([0x00, 0x01, 0x02, 0xff, 0x00, 0x42])
+    );
+    const refs = new ReferenceService(config, store);
+
+    const reference = await Effect.runPromise(refs.readReference("demo", "docs/binary.bin"));
+    expect(reference.content).toBeNull();
+    expect(reference.inline_blocked_reason).toBe("binary_file");
+    expect(reference.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(reference.mime).toBe("application/octet-stream");
+    expect(reference.size_bytes).toBe(6);
+  });
+
+  it("audits the oversized read_skill denial path", async () => {
+    const { config, store } = await buildReferenceFixture({ maxSkillBytes: 8 });
+    const refs = new ReferenceService(config, store);
+
+    await expect(Effect.runPromise(refs.readSkill("demo"))).rejects.toThrow(/max_skill_bytes/);
+
+    const audit = await Effect.runPromise(store.auditLog(20));
+    expect(
+      audit.some((entry) => entry.tool === "read_skill" && entry.skill_name === "demo")
+    ).toBe(true);
+  });
+
+  it("audits blocked-skill denials for read_skill and read_skill_reference", async () => {
+    const { config, store } = await buildReferenceFixture({ defaultTrustStatus: "blocked" });
+    const refs = new ReferenceService(config, store);
+
+    await expect(Effect.runPromise(refs.readSkill("demo"))).rejects.toThrow(/blocked/);
+    await expect(Effect.runPromise(refs.readReference("demo", "docs/template.md"))).rejects.toThrow(
+      /blocked/
+    );
+
+    const audit = await Effect.runPromise(store.auditLog(20));
+    expect(
+      audit.some((entry) => entry.tool === "read_skill" && entry.skill_name === "demo")
+    ).toBe(true);
+    expect(
+      audit.some((entry) => entry.tool === "read_skill_reference" && entry.skill_name === "demo")
+    ).toBe(true);
+  });
 });
 
-async function buildReferenceFixture(): Promise<{ root: string; config: AppConfig; store: CatalogStore }> {
+interface ReferenceFixtureOptions {
+  readonly maxSkillBytes?: number;
+  readonly defaultTrustStatus?: "trusted" | "review_required" | "blocked";
+}
+
+async function buildReferenceFixture(
+  options: ReferenceFixtureOptions = {}
+): Promise<{ root: string; config: AppConfig; store: CatalogStore }> {
   const root = await mkdtemp(path.join(os.tmpdir(), "skill-catalog-reference-"));
   await mkdir(path.join(root, "demo", "docs"), { recursive: true });
   await writeFile(
@@ -98,7 +161,7 @@ description: Demo skill.
     "utf8"
   );
   await writeFile(path.join(root, "demo", "docs", "template.md"), "Template body", "utf8");
-  const config = testConfig(root);
+  const config = testConfig(root, options);
   const store = new CatalogStore(config);
   stores.push(store);
   const sync = await Effect.runPromise(scanSkillRoots(config));
@@ -106,7 +169,7 @@ description: Demo skill.
   return { root, config, store };
 }
 
-function testConfig(root: string): AppConfig {
+function testConfig(root: string, options: ReferenceFixtureOptions = {}): AppConfig {
   return {
     server: {
       transport: "streamable-http",
@@ -118,7 +181,9 @@ function testConfig(root: string): AppConfig {
       bearerTokenEnv: undefined,
       sessionMode: "stateful"
     },
-    roots: [{ name: "test-root", path: root, defaultTrustStatus: "trusted" }],
+    roots: [
+      { name: "test-root", path: root, defaultTrustStatus: options.defaultTrustStatus ?? "trusted" }
+    ],
     storage: { sqlitePath: ":memory:" },
     search: {
       defaultLimit: 5,
@@ -130,7 +195,7 @@ function testConfig(root: string): AppConfig {
       }
     },
     limits: {
-      maxSkillBytes: 262144,
+      maxSkillBytes: options.maxSkillBytes ?? 262144,
       maxInlineReferenceBytes: 1024,
       maxHttpBodyBytes: 1048576,
       followSymlinks: false,
